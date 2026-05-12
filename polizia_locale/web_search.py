@@ -89,10 +89,10 @@ class WebSearchFinder:
         asyncio.set_event_loop(self._loop)
 
         async def _init():
-            from playwright.async_api import async_playwright
             try:
+                from playwright import async_api as playwright_async_api
                 print("[DEBUG] Avvio Playwright...")
-                self._playwright = await async_playwright().start()
+                self._playwright = await playwright_async_api.async_playwright().start()
                 print("[DEBUG] Lancio Chromium...")
                 self._browser = await self._playwright.chromium.launch(headless=True)
                 print("[DEBUG] Chromium avviato OK")

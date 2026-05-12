@@ -287,6 +287,48 @@ def _run(region_code: str, region_name: str, args) -> int:
                 results.append(_scrape_one(c))
                 time.sleep(args.sleep)
 
+        # Step 4b: verifica dei risultati dello scraping sul sito ufficiale
+        def _verify_scraped_result(c, pec_set: set[str], mail_set: set[str]) -> tuple[set[str], set[str]]:
+            """Verifica che le email trovate nello scraping siano presenti sul sito."""
+            if not (pec_set or mail_set):
+                return set(), set()
+            if not args.reliability_check:
+                return pec_set, mail_set
+
+            site = site_by_istat.get(c.codice_istat, "")
+            if not site:
+                # senza sito ufficiale verifichiamo almeno che l'email sia nel dominio del sito
+                return pec_set, mail_set
+
+            try:
+                from .reliability import verify_emails_on_site
+                all_emails = set(pec_set) | set(mail_set)
+                confirmed = verify_emails_on_site(
+                    site,
+                    all_emails,
+                    timeout=max(8, int(args.timeout)),
+                    max_pages=max(3, int(args.reliability_max_pages)),
+                )
+                return ({e for e in pec_set if e in confirmed}, {e for e in mail_set if e in confirmed})
+            except Exception:
+                # se la verifica fallisce per timeout/errore, manteniamo il risultato originale
+                return pec_set, mail_set
+
+        # elabora i risultati dello scraping e verifica quelli che hanno trovato email
+        scrape_verified: dict[str, tuple[set, set]] = {}
+        for c, scrape_result in results:
+            if scrape_result is None:
+                continue
+            pec_found, mail_found, _source = scrape_result
+            pec_verified, mail_verified = _verify_scraped_result(c, pec_found, mail_found)
+            if pec_verified or mail_verified:
+                scrape_verified[c.codice_istat] = (pec_verified, mail_verified)
+
+        verified_count = len([r for r in results if r[0].codice_istat in scrape_verified and r[1] is not None])
+        scraped_count = len([r for r in results if r[1] is not None])
+        if args.reliability_check and scraped_count > 0:
+            print(f"      Verificati sul sito: {verified_count}/{scraped_count} comuni (affidabilità 80%+)")
+
         # Step 5: ricerca web per i comuni che lo scraping non ha trovato
         still_missing: list = [c for c, r in results if r is None]
         web_results: dict[str, tuple[set, set]] = {}
@@ -316,131 +358,48 @@ def _run(region_code: str, region_name: str, args) -> int:
             except Exception:
                 return set(), set()
         if args.web_search and still_missing:
-            # priorità a Brave API (se chiave disponibile), fallback a Playwright
-            brave_key = os.environ.get("BRAVE_API_KEY", "").strip()
-            use_brave = bool(brave_key)
-            backend = "Brave Search API" if use_brave else "Bing+Playwright"
-            print(
-                f"      Ricerca web ({backend}) per {len(still_missing)} comuni residui..."
-            )
+            print(f"      Ricerca web (Playwright + Chromium) per {len(still_missing)} comuni residui...")
             try:
-                if use_brave:
-                    from .brave_search import BraveSearchFinder
-                    finder = BraveSearchFinder()
-                    # Brave free tier: 1 query/sec → sequenziale, niente thread
-                    show_tqdm = sys.stderr.isatty()
-                    iterable = (
-                        tqdm(still_missing, desc="Web search", unit="comune")
-                        if show_tqdm
-                        else still_missing
-                    )
-                    for idx, c in enumerate(iterable, start=1):
+                from .web_search import WebSearchFinder
+                finder = WebSearchFinder()
+                finder.start()
+                try:
+                    web_workers = min(args.workers, 4)
+
+                    def _web_one(c):
                         site = site_by_istat.get(c.codice_istat, "")
                         from urllib.parse import urlparse
+
                         host = ""
                         if site:
                             u = site if site.startswith("http") else "https://" + site
                             host = urlparse(u).netloc.lstrip("www.")
                         try:
-                            result = finder.search_polizia_locale(
+                            pec, mail = finder.search_polizia_locale(
                                 c.nome,
                                 c.provincia,
                                 domain_hint=host,
-                                max_total_seconds=max(30.0, float(args.timeout) * 4.0),
                                 extra_queries=args.extra_query or None,
                                 strict_pl_local=args.strict,
                             )
-                            # Brave ritorna (pec, mail, sources), WebSearchFinder (pec, mail)
-                            pec, mail = result[:2]
                             pec, mail = _accept_verified_web_result(c, pec, mail)
+                            return c, (pec, mail)
+                        except Exception:
+                            return c, (set(), set())
+
+                    with ThreadPoolExecutor(max_workers=web_workers) as pool:
+                        futures = [pool.submit(_web_one, c) for c in still_missing]
+                        for fut in tqdm(
+                            as_completed(futures),
+                            total=len(futures),
+                            desc="Web search",
+                            unit="comune",
+                        ):
+                            c, (pec, mail) = fut.result()
                             if pec or mail:
                                 web_results[c.codice_istat] = (pec, mail)
-                        except Exception:
-                            continue
-                        if not show_tqdm and (idx % 5 == 0 or idx == len(still_missing)):
-                            print(f"      Web search: {idx}/{len(still_missing)} comuni")
-                    finder.close()
-                    # Fallback automatic con Playwright per i comuni ancora senza risultati
-                    remaining = [c for c in still_missing if c.codice_istat not in web_results]
-                    if remaining:
-                        try:
-                            from .web_search import WebSearchFinder
-                            print(f"      Fallback Playwright per {len(remaining)} comuni restanti...")
-                            wfinder = WebSearchFinder()
-                            wfinder.start()
-                            show_tqdm_fallback = sys.stderr.isatty()
-                            iterable_fb = (
-                                tqdm(remaining, desc="Fallback web", unit="comune")
-                                if show_tqdm_fallback
-                                else remaining
-                            )
-                            for idx, c_fb in enumerate(iterable_fb, start=1):
-                                site = site_by_istat.get(c_fb.codice_istat, "")
-                                from urllib.parse import urlparse
-                                host = ""
-                                if site:
-                                    u = site if site.startswith("http") else "https://" + site
-                                    host = urlparse(u).netloc.lstrip("www.")
-                                try:
-                                    pec, mail = wfinder.search_polizia_locale(
-                                        c_fb.nome,
-                                        c_fb.provincia,
-                                        domain_hint=host,
-                                        extra_queries=args.extra_query or None,
-                                        strict_pl_local=args.strict,
-                                    )
-                                    pec, mail = _accept_verified_web_result(c_fb, pec, mail)
-                                    if pec or mail:
-                                        web_results[c_fb.codice_istat] = (pec, mail)
-                                except Exception:
-                                    continue
-                                if not show_tqdm_fallback and (idx % 5 == 0 or idx == len(remaining)):
-                                    print(f"      Fallback: {idx}/{len(remaining)}")
-                        finally:
-                            try:
-                                wfinder.stop()
-                            except Exception:
-                                pass
-                else:
-                    from .web_search import WebSearchFinder
-                    finder = WebSearchFinder()
-                    finder.start()
-                    try:
-                        web_workers = min(args.workers, 4)
-
-                        def _web_one(c):
-                            site = site_by_istat.get(c.codice_istat, "")
-                            from urllib.parse import urlparse
-                            host = ""
-                            if site:
-                                u = site if site.startswith("http") else "https://" + site
-                                host = urlparse(u).netloc.lstrip("www.")
-                            try:
-                                pec, mail = finder.search_polizia_locale(
-                                    c.nome,
-                                    c.provincia,
-                                    domain_hint=host,
-                                    extra_queries=args.extra_query or None,
-                                    strict_pl_local=args.strict,
-                                )
-                                pec, mail = _accept_verified_web_result(c, pec, mail)
-                                return c, (pec, mail)
-                            except Exception:
-                                return c, (set(), set())
-
-                        with ThreadPoolExecutor(max_workers=web_workers) as pool:
-                            futures = [pool.submit(_web_one, c) for c in still_missing]
-                            for fut in tqdm(
-                                as_completed(futures),
-                                total=len(futures),
-                                desc="Web search",
-                                unit="comune",
-                            ):
-                                c, (pec, mail) = fut.result()
-                                if pec or mail:
-                                    web_results[c.codice_istat] = (pec, mail)
-                    finally:
-                        finder.stop()
+                finally:
+                    finder.stop()
             except Exception as e:
                 print(f"      Avviso: ricerca web non disponibile ({e})")
 
@@ -505,6 +464,26 @@ def _run(region_code: str, region_name: str, args) -> int:
 
         for c, res in results:
             if res:
+                # usa la versione verificata se disponibile
+                if c.codice_istat in scrape_verified:
+                    pec_set, mail_set = scrape_verified[c.codice_istat]
+                    d = {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": f"Comune di {c.nome}",
+                        "descrizione_uo": "Polizia Locale (dal sito comunale - verificato)",
+                        "pec": " | ".join(sorted(pec_set)),
+                        "email": " | ".join(sorted(mail_set)),
+                        "sito": site_by_istat.get(c.codice_istat, ""),
+                        "fonte": "WebScraping+Verifica",
+                    }
+                    rows.append(d)
+                    continue
+                
+                # altrimenti usa il risultato grezzo dello scraping
                 d = res.as_dict()
                 d.update(
                     {
@@ -782,9 +761,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-web-search",
         dest="web_search",
         action="store_false",
-        help="Disabilita la ricerca web (Bing+Playwright) per i comuni "
+        help="Disabilita la ricerca web via Playwright + Chromium per i comuni "
         "in cui lo scraping diretto non trova mail PL-specifiche. "
-        "Per default è ATTIVA (richiede Playwright + browser Chromium).",
+        "Per default è ATTIVA.",
     )
     p.set_defaults(web_search=True)
     p.add_argument(

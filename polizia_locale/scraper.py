@@ -370,11 +370,21 @@ def scrape_polizia_locale(
     pec_all: set[str] = set()
     mail_all: set[str] = set()
 
+    def _email_on_official_domain(email: str) -> bool:
+        if "@" not in email:
+            return False
+        domain = email.split("@", 1)[1].lower().strip()
+        return bool(
+            domain == host
+            or domain.endswith("." + host)
+            or host.endswith("." + domain)
+        )
+
     def _harvest(html: str, url_is_pl: bool):
         if strict_pl_local:
             for m in EMAIL_RE.finditer(html):
                 e = m.group(0)
-                if is_pl_specific_email(e):
+                if is_pl_specific_email(e) or (url_is_pl and _email_on_official_domain(e)):
                     if _is_pec(e, html[max(0, m.start()-80):m.end()+80]):
                         pec_all.add(e)
                     else:
@@ -399,6 +409,67 @@ def scrape_polizia_locale(
                 _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url))
             except Exception:
                 continue
+
+        # 1b) Sitemap discovery: molti siti PA pubblicano le UO solo via sitemap
+        if not (pec_all or mail_all):
+            sitemap_seed_urls = [
+                urljoin(base, "/robots.txt"),
+                urljoin(base, "/sitemap.xml"),
+                urljoin(base, "/sitemap_index.xml"),
+            ]
+            sitemap_urls: list[str] = []
+            for seed_url in sitemap_seed_urls:
+                if time.monotonic() > deadline or len(sitemap_urls) >= 8:
+                    break
+                try:
+                    rr = session.get(seed_url, timeout=req_timeout, allow_redirects=True)
+                    if rr.status_code != 200:
+                        continue
+                    text = rr.text or ""
+                    if seed_url.endswith("robots.txt"):
+                        for line in text.splitlines():
+                            if line.lower().startswith("sitemap:"):
+                                sitemap_urls.append(line.split(":", 1)[1].strip())
+                    else:
+                        for loc in re.findall(r"<loc>(.*?)</loc>", text, flags=re.IGNORECASE | re.DOTALL):
+                            if loc.endswith((".xml", ".xml.gz")):
+                                sitemap_urls.append(loc.strip())
+                except Exception:
+                    continue
+
+            seen_sitemaps: set[str] = set()
+            for sitemap_url in sitemap_urls:
+                if time.monotonic() > deadline or (pec_all or mail_all):
+                    break
+                if sitemap_url in seen_sitemaps:
+                    continue
+                seen_sitemaps.add(sitemap_url)
+                try:
+                    rr = session.get(sitemap_url, timeout=req_timeout, allow_redirects=True)
+                    if rr.status_code != 200:
+                        continue
+                    text = rr.text or ""
+                    if not any(k in text.lower() for k in ("polizia", "vigili", "municipale", "comando", "sicurezza urbana")):
+                        continue
+                    for loc in re.findall(r"<loc>(.*?)</loc>", text, flags=re.IGNORECASE | re.DOTALL):
+                        u = loc.strip()
+                        if not u.startswith(("http://", "https://")):
+                            continue
+                        low_u = u.lower()
+                        if not any(k in low_u for k in ("polizia", "vigili", "municipale", "comando", "sicurezza-urbana", "sicurezza urbana", "punto_contatto")):
+                            continue
+                        if time.monotonic() > deadline or (pec_all or mail_all):
+                            break
+                        try:
+                            rr2 = session.get(u, timeout=req_timeout, allow_redirects=True)
+                            if rr2.status_code != 200:
+                                continue
+                            pages_visited.append(rr2.url)
+                            _harvest(rr2.text, url_is_pl=_path_is_polizia(rr2.url) or _path_is_polizia(u))
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
 
         # 2) Sottodomini dedicati (pm.X, pl.X, polizia.X)
         if not (pec_all or mail_all):
