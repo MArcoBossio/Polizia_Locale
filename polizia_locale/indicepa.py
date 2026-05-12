@@ -164,27 +164,51 @@ def find_polizia_locale_uo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
 
 
 def load_enti_index() -> dict[str, dict]:
-    """Indice Codice_IPA -> info ente (utile per trovare il sito istituzionale)."""
+    """Indice Codice_IPA -> info ente (utile per trovare il sito istituzionale).
+
+    Filtra solo gli enti con Codice_Categoria 'L6' (Comuni) per evitare collisioni
+    con scuole / ASL / altri enti che condividono lo stesso Codice_comune_ISTAT.
+    Include anche le PEC istituzionali (Mail1..Mail5) come fallback opzionale.
+    """
     path = download_enti()
     df = pd.read_excel(path, dtype=str, engine="openpyxl").fillna("")
     df.columns = [c.strip() for c in df.columns]
+    if "Codice_Categoria" in df.columns:
+        df = df[df["Codice_Categoria"].str.strip().str.upper() == "L6"]
     idx: dict[str, dict] = {}
     site_col = None
     for cand in ("Sito_istituzionale", "Sito_Istituzionale", "Sito"):
         if cand in df.columns:
             site_col = cand
             break
-    istat_col = "Codice_Comune_ISTAT" if "Codice_Comune_ISTAT" in df.columns else (
-        "Codice_comune_ISTAT" if "Codice_comune_ISTAT" in df.columns else None
-    )
+    istat_col = None
+    for cand in ("Codice_comune_ISTAT", "Codice_Comune_ISTAT", "Codice_ISTAT"):
+        if cand in df.columns:
+            istat_col = cand
+            break
     for _, row in df.iterrows():
         cod = str(row.get("Codice_IPA", "")).strip()
         if not cod:
             continue
+        pec_list: list[str] = []
+        mail_list: list[str] = []
+        for i in range(1, 6):
+            m = str(row.get(f"Mail{i}", "")).strip()
+            t = str(row.get(f"Tipo_Mail{i}", "")).strip().lower()
+            if not m or "@" not in m:
+                continue
+            if t == "pec":
+                pec_list.append(m)
+            else:
+                mail_list.append(m)
         idx[cod] = {
             "denominazione": str(row.get("Denominazione_ente", "")).strip(),
             "sito": str(row.get(site_col, "")).strip() if site_col else "",
             "codice_istat": str(row.get(istat_col, "")).strip().zfill(6) if istat_col else "",
             "tipologia": str(row.get("Tipologia", "")).strip(),
+            "indirizzo": str(row.get("Indirizzo", "")).strip(),
+            "cap": str(row.get("CAP", "")).strip(),
+            "pec_comune": " | ".join(dict.fromkeys(pec_list)),
+            "mail_comune": " | ".join(dict.fromkeys(mail_list)),
         }
     return idx

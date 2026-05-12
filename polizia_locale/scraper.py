@@ -94,7 +94,7 @@ def duckduckgo_first_result(session: requests.Session, query: str) -> str:
         r = session.post(
             "https://duckduckgo.com/html/",
             data={"q": query},
-            timeout=15,
+            timeout=(5, 10),
         )
         r.raise_for_status()
     except Exception:
@@ -191,10 +191,20 @@ def scrape_polizia_locale(
     codice_istat: str,
     site_hint: str = "",
     timeout: int = 15,
+    total_budget: float = 25.0,
+    max_candidates: int = 4,
 ) -> ScrapeResult | None:
+    """Cerca PEC/email della Polizia Locale sul sito comunale.
+
+    `timeout` è il timeout (connect, read) di ogni singola request; `total_budget`
+    è il tempo massimo totale dedicato a questo comune (tutte le pagine).
+    """
+    deadline = time.monotonic() + total_budget
+    # split timeout: connect più aggressivo del read
+    req_timeout = (min(timeout, 8), timeout)
     session = _new_session()
     site = site_hint.strip() or find_comune_website(session, comune, provincia)
-    if not site:
+    if not site or time.monotonic() > deadline:
         return None
     parsed = urlparse(site)
     if not parsed.scheme:
@@ -206,28 +216,30 @@ def scrape_polizia_locale(
     pec_all: set[str] = set()
     mail_all: set[str] = set()
     try:
-        r = session.get(site, timeout=timeout)
+        r = session.get(site, timeout=req_timeout)
         pages_visited.append(r.url)
         soup = BeautifulSoup(r.text, "html.parser")
         pec, mail = _filter_polizia_emails(_extract_emails_with_context(r.text))
         pec_all |= pec
         mail_all |= mail
 
-        candidates = _candidate_links(soup, base)
+        candidates = _candidate_links(soup, base)[:max_candidates]
         for url in candidates:
+            if time.monotonic() > deadline:
+                break
             try:
-                rr = session.get(url, timeout=timeout)
+                rr = session.get(url, timeout=req_timeout)
                 pages_visited.append(rr.url)
                 pec, mail = _filter_polizia_emails(_extract_emails_with_context(rr.text))
                 pec_all |= pec
                 mail_all |= mail
                 if pec_all or mail_all:
                     break
-                time.sleep(0.2)
             except Exception:
                 continue
     except Exception:
-        return None
+        if not (pec_all or mail_all):
+            return None
 
     if not pec_all and not mail_all:
         return None

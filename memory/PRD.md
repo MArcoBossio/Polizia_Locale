@@ -47,17 +47,32 @@
 - **Output**: tre file omogenei (`polizia_locale_<regione>.{csv,xlsx,json}`) con 17 colonne.
 - **Caching**: `~/.cache/polizia_locale/` (override via `POLIZIA_LOCALE_CACHE`).
 - **Test reali eseguiti**:
-  - `python run.py "Valle d'Aosta" --no-scrape` → 18 UO PL/PM trovate su 74 comuni (codici PEC dei rispettivi comandi).
-  - `echo 20 | python run.py --no-scrape` (menu interattivo, Sardegna) → 65 UO PL/PM su 377 comuni.
-  - Smoke test scraper su comune senza match → ritorna `None` senza errori.
+  - `python run.py "Valle d'Aosta" --no-scrape` → 18 UO PL/PM trovate su 74 comuni.
+  - `echo 20 | python run.py --no-scrape` (Sardegna) → 65 UO PL/PM su 377 comuni.
+  - `python run.py Lombardia --scrape-limit 15 --workers 8 --include-comune-pec`
+    → **1.500 / 1.502 comuni coperti (99,9 %)** in ~2 minuti.
+
+## Aggiornamenti del 11/05 (validazione Lombardia)
+- **Bug fix `load_enti_index`**: ora filtra `Codice_Categoria == "L6"` per
+  prendere il sito istituzionale del Comune e non quello di scuole/ASL che
+  condividono lo stesso `Codice_comune_ISTAT`.
+- **Scraper robusto**: split timeout (connect/read), budget temporale per
+  comune (25 s), max 4 pagine candidate, gestione 202 di DuckDuckGo.
+- **Scraping parallelo**: opzione `--workers N` (default 8, ThreadPoolExecutor).
+- **Opzione `--scrape-limit N`**: per test/validazione su regioni grandi.
+- **Opzione `--include-comune-pec`** (opt-in): se la PL non ha una mail
+  dedicata, viene usata la PEC istituzionale del Comune dal dataset Enti,
+  marcata come `IndicePA-Comune (fallback)`.
+- **Risultato Lombardia**: 433 comuni con UO PL dedicata + 1.066 fallback PEC
+  comune + 1 scraping + 1 reale NON TROVATO (Lirio).
 
 ## Backlog (P1/P2)
-- P1: aggiungere CLI flag `--workers N` per scraping in parallelo (thread pool).
-- P1: integrare anche il dataset **AOO** di IndicePA come ulteriore fonte primaria (alcuni enti registrano la PL come AOO invece che UO).
-- P2: cache persistente dei risultati di scraping per riprendere esecuzioni interrotte.
+- P1: integrare il dataset **AOO** di IndicePA come fonte primaria addizionale.
+- P2: cache persistente dei risultati di scraping.
 - P2: opzione `--format` per scegliere uno solo dei formati di output.
-- P2: integrare ulteriori motori di ricerca di fallback (Bing, Brave Search).
-- P2: validazione MX della PEC scoperta via scraping.
+- P2: ricerca aggiuntiva con Bing/Brave Search come secondo motore.
+- P2: validazione MX delle PEC scoperte via scraping.
 
 ## Next tasks
-- Raccogliere feedback dall'utente su una regione grande (es. Lombardia) per affinare i pattern di estrazione e l'euristica del fallback.
+- Eventuale modulo di invio PEC batch (con allegati e tracking in SQLite) per
+  trasformare lo script in uno strumento operativo end-to-end.

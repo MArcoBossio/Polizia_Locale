@@ -46,11 +46,28 @@ python run.py --list-regions
 ### Opzioni utili
 
 ```text
--o, --output DIR     Cartella di output (default: ./output)
---no-scrape          Usa solo IndicePA, niente scraping dei siti comunali
---sleep SEC          Pausa tra richieste di scraping (default 0.5)
---timeout SEC        Timeout HTTP scraping (default 15)
+-o, --output DIR        Cartella di output (default: ./output)
+--no-scrape             Usa solo IndicePA, niente scraping dei siti comunali
+--workers N             Thread paralleli per lo scraping (default 8)
+--scrape-limit N        Limita lo scraping ai primi N comuni mancanti (utile in fase di test)
+--include-comune-pec    Per i comuni in cui la Polizia Locale non ha una mail/PEC
+                        dedicata, usa come fallback la PEC istituzionale del
+                        Comune dal dataset IndicePA Enti, marcata chiaramente.
+--sleep SEC             Pausa tra richieste di scraping in modalità sequenziale (default 0.5)
+--timeout SEC           Timeout HTTP scraping (default 15)
 ```
+
+### Esempio reale
+
+Lombardia (1.502 comuni, ~2 minuti totali con `--workers 8 --include-comune-pec`):
+
+| Fonte                            | Comuni |
+|----------------------------------|-------:|
+| `IndicePA` (UO PL dedicata)      |    433 |
+| `IndicePA-Comune (fallback)`     |  1.066 |
+| `ScrapingSitoComune`             |      1 |
+| `NON TROVATO`                    |      1 |
+| **Totale copertura**             |  **1.500 / 1.502 (99,9 %)** |
 
 ## Output
 

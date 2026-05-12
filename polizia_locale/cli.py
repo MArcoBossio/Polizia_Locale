@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
@@ -59,7 +60,7 @@ def _run(region_code: str, region_name: str, args) -> int:
         by_istat.setdefault(rec.codice_istat, []).append(rec)
 
     enti_idx = None
-    if args.scrape:
+    if args.scrape or args.include_comune_pec:
         print("[3/4] Carico l'indice Enti per recuperare i siti istituzionali...")
         try:
             enti_idx = load_enti_index()
@@ -92,20 +93,37 @@ def _run(region_code: str, region_name: str, args) -> int:
     )
 
     if args.scrape and missing:
-        print(
-            f"[4/4] Fallback scraping per {len(missing)} comuni senza PEC ufficiale dedicata..."
-        )
+        # eventuale limite di scraping (utile per validazione su regioni grandi)
+        to_scrape = missing
+        skipped: list = []
+        if args.scrape_limit and args.scrape_limit > 0 and len(missing) > args.scrape_limit:
+            to_scrape = missing[: args.scrape_limit]
+            skipped = missing[args.scrape_limit :]
+            print(
+                f"[4/4] Fallback scraping limitato ai primi {len(to_scrape)} comuni "
+                f"(altri {len(skipped)} segnati NON TROVATO)."
+            )
+        else:
+            print(
+                f"[4/4] Fallback scraping per {len(to_scrape)} comuni senza PEC ufficiale dedicata "
+                f"(workers={args.workers})..."
+            )
+
         site_by_istat: dict[str, str] = {}
+        pec_comune_by_istat: dict[str, dict] = {}
         if enti_idx:
             for info in enti_idx.values():
                 ci = info.get("codice_istat")
-                if ci and info.get("sito"):
+                if not ci:
+                    continue
+                if info.get("sito"):
                     site_by_istat.setdefault(ci, info["sito"])
+                pec_comune_by_istat.setdefault(ci, info)
 
-        for c in tqdm(missing, desc="Scraping", unit="comune"):
+        def _scrape_one(c):
             site_hint = site_by_istat.get(c.codice_istat, "")
             try:
-                res = scrape_polizia_locale(
+                return c, scrape_polizia_locale(
                     c.nome,
                     c.provincia,
                     c.codice_istat,
@@ -113,7 +131,25 @@ def _run(region_code: str, region_name: str, args) -> int:
                     timeout=args.timeout,
                 )
             except Exception:
-                res = None
+                return c, None
+
+        results: list = []
+        if args.workers > 1:
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                futures = [pool.submit(_scrape_one, c) for c in to_scrape]
+                for fut in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc="Scraping",
+                    unit="comune",
+                ):
+                    results.append(fut.result())
+        else:
+            for c in to_scrape:
+                results.append(_scrape_one(c))
+                time.sleep(args.sleep)
+
+        for c, res in results:
             if res:
                 d = res.as_dict()
                 d.update(
@@ -124,6 +160,27 @@ def _run(region_code: str, region_name: str, args) -> int:
                     }
                 )
                 rows.append(d)
+                continue
+            # Fallback PEC del comune (opt-in)
+            info = pec_comune_by_istat.get(c.codice_istat)
+            if args.include_comune_pec and info and (info.get("pec_comune") or info.get("mail_comune")):
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": info.get("denominazione", f"Comune di {c.nome}"),
+                        "descrizione_uo": "PEC generica del Comune (la PL non risulta avere un indirizzo dedicato)",
+                        "pec": info.get("pec_comune", ""),
+                        "email": info.get("mail_comune", ""),
+                        "indirizzo": info.get("indirizzo", ""),
+                        "cap": info.get("cap", ""),
+                        "sito": info.get("sito", ""),
+                        "fonte": "IndicePA-Comune (fallback)",
+                    }
+                )
             else:
                 rows.append(
                     {
@@ -138,26 +195,91 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "fonte": "NON TROVATO",
                     }
                 )
-            time.sleep(args.sleep)
+        for c in skipped:
+            info = pec_comune_by_istat.get(c.codice_istat) if args.include_comune_pec else None
+            if info and (info.get("pec_comune") or info.get("mail_comune")):
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": info.get("denominazione", f"Comune di {c.nome}"),
+                        "descrizione_uo": "PEC generica del Comune (la PL non risulta avere un indirizzo dedicato)",
+                        "pec": info.get("pec_comune", ""),
+                        "email": info.get("mail_comune", ""),
+                        "indirizzo": info.get("indirizzo", ""),
+                        "cap": info.get("cap", ""),
+                        "sito": info.get("sito", ""),
+                        "fonte": "IndicePA-Comune (fallback)",
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": f"Comune di {c.nome}",
+                        "pec": "",
+                        "email": "",
+                        "fonte": "NON TROVATO (scrape-limit)",
+                    }
+                )
     else:
-        # senza scraping: aggiungiamo righe vuote per i comuni senza match
+        # senza scraping: aggiungiamo righe per i comuni senza match
         for c in missing:
-            rows.append(
-                {
-                    "comune": c.nome,
-                    "codice_istat": c.codice_istat,
-                    "provincia": c.provincia,
-                    "sigla_provincia": c.sigla_provincia,
-                    "regione": c.regione,
-                    "denominazione_ente": f"Comune di {c.nome}",
-                    "pec": "",
-                    "email": "",
-                    "fonte": "NON TROVATO",
-                }
-            )
+            info = None
+            if args.include_comune_pec and enti_idx is None:
+                # carichiamo on-demand se non lo avevamo ancora fatto
+                try:
+                    enti_idx = load_enti_index()
+                except Exception:
+                    enti_idx = {}
+            if args.include_comune_pec and enti_idx:
+                # cerchiamo per codice ISTAT
+                for inf in enti_idx.values():
+                    if inf.get("codice_istat") == c.codice_istat:
+                        info = inf
+                        break
+            if info and (info.get("pec_comune") or info.get("mail_comune")):
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": info.get("denominazione", f"Comune di {c.nome}"),
+                        "descrizione_uo": "PEC generica del Comune (la PL non risulta avere un indirizzo dedicato)",
+                        "pec": info.get("pec_comune", ""),
+                        "email": info.get("mail_comune", ""),
+                        "indirizzo": info.get("indirizzo", ""),
+                        "cap": info.get("cap", ""),
+                        "sito": info.get("sito", ""),
+                        "fonte": "IndicePA-Comune (fallback)",
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": f"Comune di {c.nome}",
+                        "pec": "",
+                        "email": "",
+                        "fonte": "NON TROVATO",
+                    }
+                )
         if missing:
             print(
-                f"[4/4] Saltato scraping (disabilitato). {len(missing)} comuni senza PEC dedicata."
+                f"[4/4] Saltato scraping (disabilitato). {len(missing)} comuni senza UO PL dedicata."
             )
 
     # esportazione
@@ -218,13 +340,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--sleep",
         type=float,
         default=0.5,
-        help="Pausa (sec) tra richieste di scraping (default: 0.5)",
+        help="Pausa (sec) tra richieste di scraping in modalità sequenziale (default: 0.5)",
     )
     p.add_argument(
         "--timeout",
         type=int,
         default=15,
         help="Timeout HTTP per richiesta di scraping (default: 15s)",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Numero di thread paralleli per lo scraping (default: 8, 1 = sequenziale)",
+    )
+    p.add_argument(
+        "--scrape-limit",
+        type=int,
+        default=0,
+        dest="scrape_limit",
+        help="Limita lo scraping ai primi N comuni senza match IndicePA "
+        "(0 = nessun limite, default). Utile per validazione su regioni grandi.",
+    )
+    p.add_argument(
+        "--include-comune-pec",
+        action="store_true",
+        dest="include_comune_pec",
+        help="Per i comuni in cui la PL non risulta avere una mail/PEC dedicata, "
+        "usa come fallback la PEC istituzionale del Comune (chiaramente marcata "
+        "come 'PEC generica del Comune'). Disabilitato per default.",
     )
     return p
 
