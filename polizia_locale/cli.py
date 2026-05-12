@@ -14,6 +14,11 @@ from .exporter import export_all
 from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index
 from .regions import list_regions, resolve_region
 from .scraper import scrape_polizia_locale
+from .unioni import (
+    fetch_member_comuni,
+    find_unioni_with_polizia_locale,
+    match_member_comuni,
+)
 
 
 BANNER = r"""
@@ -66,6 +71,68 @@ def _run(region_code: str, region_name: str, args) -> int:
         if rec.codice_istat not in by_istat:
             by_istat[rec.codice_istat] = [rec]
 
+    # --- Espansione delle Unioni di Comuni / Consorzi PL ---
+    union_records_by_istat: dict[str, dict] = {}
+    if args.expand_unioni:
+        try:
+            all_unioni = find_unioni_with_polizia_locale(region_code=region_code)
+        except Exception as e:
+            print(f"      Avviso: impossibile caricare le Unioni ({e})")
+            all_unioni = []
+        if all_unioni:
+            def _process(u):
+                try:
+                    dedicated, homepage = fetch_member_comuni(u.sito, timeout=args.timeout)
+                except Exception:
+                    return u, []
+                matched = match_member_comuni(dedicated, comuni)
+                if not matched:
+                    matched = match_member_comuni(homepage, comuni)
+                return u, matched
+
+            print(
+                f"      Espansione Unioni/Consorzi PL: analizzo {len(all_unioni)} enti "
+                f"intercomunali della regione (workers={args.workers})..."
+            )
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                futures = [pool.submit(_process, u) for u in all_unioni]
+                pairs = []
+                for fut in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc="Unioni",
+                    unit="ente",
+                ):
+                    pairs.append(fut.result())
+            unioni_in_region = [(u, m) for (u, m) in pairs if m]
+            total_attrib = 0
+            for u, matched in unioni_in_region:
+                for c in matched:
+                    if c.codice_istat in by_istat:
+                        continue  # ha già una PL diretta
+                    union_records_by_istat.setdefault(c.codice_istat, {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": u.denominazione_ente,
+                        "codice_ipa": u.codice_ipa,
+                        "descrizione_uo": f"{u.descrizione_uo} (gestione associata)",
+                        "pec": u.pec,
+                        "email": u.email,
+                        "telefono": u.telefono,
+                        "indirizzo": u.indirizzo,
+                        "cap": u.cap,
+                        "sito": u.sito,
+                        "fonte": "IndicePA-Unione",
+                    })
+                    total_attrib += 1
+            print(
+                f"      Unioni che servono comuni della regione: {len(unioni_in_region)} "
+                f"→ {total_attrib} nuovi comuni associati."
+            )
+
     enti_idx = None
     if args.scrape or args.include_comune_pec:
         print("[3/4] Carico l'indice Enti per recuperare i siti istituzionali...")
@@ -92,6 +159,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                     }
                 )
                 rows.append(d)
+        elif c.codice_istat in union_records_by_istat:
+            rows.append(union_records_by_istat[c.codice_istat])
         else:
             missing.append(c)
 
@@ -338,6 +407,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disabilita lo scraping dei siti comunali (usa solo IndicePA).",
     )
+    p.add_argument(
+        "--no-expand-unioni",
+        dest="expand_unioni",
+        action="store_false",
+        help="Disabilita l'espansione delle Unioni di Comuni / Consorzi PL. "
+        "Per default è ATTIVA: identifica le UO/AOO di Polizia Locale gestite "
+        "da Unioni di Comuni o Consorzi e replica la PEC sui comuni aderenti.",
+    )
+    p.set_defaults(expand_unioni=True)
     p.add_argument(
         "--list-regions",
         action="store_true",

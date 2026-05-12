@@ -12,14 +12,19 @@ equivalenti, ed escludendo Polizia di Stato, Stradale, Provinciale, ecc.
 
 1. **ISTAT** — elenco ufficiale dei comuni italiani (CSV, aggiornato semestralmente).
    <https://www.istat.it/storage/codici-unita-amministrative/Elenco-comuni-italiani.csv>
-2. **IndicePA (AgID)** — registro ufficiale delle Pubbliche Amministrazioni
-   italiane, dataset **Unità Organizzative** (contiene PEC/email per ogni UO,
-   inclusi i comandi di Polizia Locale).
-   <https://indicepa.gov.it/ipa-dati/dataset/unita-organizzative>
+2. **IndicePA (AgID)** — registro ufficiale delle Pubbliche Amministrazioni italiane:
+   - **Unità Organizzative (UO)** — PEC/email dei comandi di Polizia Locale.
+   - **Aree Organizzative Omogenee (AOO)** — alcuni comuni registrano la PL come AOO.
+   - **Enti L18/L12/L36** — Unioni di Comuni, Comunità Montane, Consorzi che gestiscono la PL in forma **associata**. Per ognuno lo script scrapa il sito istituzionale per identificare i comuni aderenti e replica la PEC della PL su tutti i membri della regione.
+   - **Enti L6** — usato per la PEC istituzionale del Comune come fallback finale.
 3. **Scraping del sito comunale** (fallback) — per i comuni che in IndicePA non
-   hanno una UO dedicata alla Polizia Locale, lo script cerca il sito
-   istituzionale e prova a estrarre email/PEC con contesto "polizia
-   locale/municipale".
+   hanno né una UO né una AOO né un'Unione di PL, lo script visita
+   direttamente i path comuni tipo `/polizia-locale`, `/comando-polizia-locale`,
+   `/vigili-urbani`.
+4. **PEC del Comune come fallback** (attivo di default) — se nessuna delle fonti
+   precedenti restituisce una mail/PEC specifica della Polizia Locale, lo
+   script usa la PEC istituzionale del Comune dal dataset Enti, marcata
+   `IndicePA-Comune (fallback)`. Disabilitabile con `--no-comune-pec`.
 
 ## Installazione
 
@@ -48,24 +53,53 @@ python run.py --list-regions
 ```text
 -o, --output DIR        Cartella di output (default: ./output)
 --no-scrape             Usa solo IndicePA, niente scraping dei siti comunali
---no-comune-pec         Disabilita il fallback con la PEC istituzionale del Comune
-                        (per default è ATTIVO: garantisce copertura ~100%)
---workers N             Thread paralleli per lo scraping (default 8)
---scrape-limit N        Limita lo scraping ai primi N comuni mancanti (utile in fase di test)
---sleep SEC             Pausa tra richieste di scraping in modalità sequenziale (default 0.5)
+--no-comune-pec         Disabilita il fallback con la PEC del Comune (default: ATTIVO)
+--no-expand-unioni      Disabilita l'espansione delle Unioni/Consorzi PL (default: ATTIVO)
+--workers N             Thread paralleli (default 8)
+--scrape-limit N        Limita lo scraping ai primi N comuni mancanti (test)
+--sleep SEC             Pausa tra richieste in modalità sequenziale (default 0.5)
 --timeout SEC           Timeout HTTP scraping (default 15)
 ```
 
-### Esempio reale (Lombardia, 1.502 comuni, ~2 min)
+## Dove trovo i risultati
+
+Default: cartella `./output/` (relativa alla directory in cui lanci il comando).
+
+Esempio dopo `git clone`:
+```bash
+git clone <url-repo> polizia-locale-finder
+cd polizia-locale-finder
+pip install -r requirements-cli.txt
+python run.py Lombardia
+ls ./output/
+# polizia_locale_lombardia.csv
+# polizia_locale_lombardia.xlsx
+# polizia_locale_lombardia.json
+```
+
+Puoi cambiare percorso con `-o`:
+```bash
+python run.py Lombardia -o ~/Desktop/pec-pl
+```
+
+### Esempio reale Toscana (273 comuni, ~30 sec)
+
+| Fonte                                | Comuni |
+|--------------------------------------|-------:|
+| `IndicePA` (UO PL dedicata)          |    166 |
+| `IndicePA-Unione` (PL associata)     |     24 |
+| `IndicePA-Comune (fallback)`         |     92 |
+| **Copertura**                        | **273 / 273 (100 %)** |
+
+### Esempio reale Lombardia (1.502 comuni, ~2 min)
 
 | Fonte                            | Comuni |
 |----------------------------------|-------:|
 | `IndicePA` (UO PL dedicata)      |    434 |
 | `IndicePA-AOO` (AOO PL)          |      6 |
-| `IndicePA-Comune (fallback)`     |  1.060 |
-| `ScrapingSitoComune`             |      1 |
-| `NON TROVATO`                    |      1 |
-| **Totale copertura**             |  **1.500 / 1.502 (99,9 %)** |
+| `IndicePA-Unione` (PL associata) | varies |
+| `IndicePA-Comune (fallback)`     |  ~1.060 |
+| **Copertura tipica**             |  **99,9 %** |
 
 ## Output
 

@@ -52,27 +52,37 @@
   - `python run.py Lombardia --scrape-limit 15 --workers 8 --include-comune-pec`
     → **1.500 / 1.502 comuni coperti (99,9 %)** in ~2 minuti.
 
-## Aggiornamenti del 11/05 (validazione Lombardia)
+## Aggiornamenti del 11/05 (validazione Lombardia + Unioni)
 - **Bug fix `load_enti_index`**: ora filtra `Codice_Categoria == "L6"` per
-  prendere il sito istituzionale del Comune e non quello di scuole/ASL che
-  condividono lo stesso `Codice_comune_ISTAT`.
+  prendere il sito istituzionale del Comune e non quello di scuole/ASL.
 - **Scraper robusto**: split timeout (connect/read), budget temporale per
   comune (25 s), max 4 pagine candidate, gestione 202 di DuckDuckGo.
 - **Scraping parallelo**: opzione `--workers N` (default 8, ThreadPoolExecutor).
-- **Opzione `--scrape-limit N`**: per test/validazione su regioni grandi.
-- **Opzione `--include-comune-pec`** (opt-in): se la PL non ha una mail
-  dedicata, viene usata la PEC istituzionale del Comune dal dataset Enti,
-  marcata come `IndicePA-Comune (fallback)`.
-- **Risultato Lombardia**: 433 comuni con UO PL dedicata + 1.066 fallback PEC
-  comune + 1 scraping + 1 reale NON TROVATO (Lirio).
+- **Opzione `--scrape-limit N`** per test/validazione su regioni grandi.
+- **Opzione `--no-comune-pec`**: per default è ATTIVO il fallback con la PEC
+  istituzionale del Comune dal dataset Enti.
+- **AOO dataset di IndicePA** integrato come fonte primaria addizionale.
+- **URL pattern guessing nello scraper**: prova direttamente
+  `/polizia-locale`, `/comando-polizia-locale`, `/vigili-urbani`, ecc.
+- **Espansione Unioni di Comuni / Consorzi PL** (`--no-expand-unioni` per
+  disabilitare): identifica gli enti `L18`/`L12`/`L36` che hanno una UO/AOO di
+  Polizia Locale, scrapa il loro sito istituzionale per estrarre i comuni
+  aderenti (text-search inverso sulla lista ISTAT della regione, evita falsi
+  positivi cross-regione filtrando per sede dell'Unione nella stessa regione),
+  e replica la PEC della PL su tutti i comuni membri.
 
-## Backlog (P1/P2)
-- P1: integrare il dataset **AOO** di IndicePA come fonte primaria addizionale.
-- P2: cache persistente dei risultati di scraping.
-- P2: opzione `--format` per scegliere uno solo dei formati di output.
-- P2: ricerca aggiuntiva con Bing/Brave Search come secondo motore.
-- P2: validazione MX delle PEC scoperte via scraping.
+## Risultati tipici (default config, comando `python run.py <regione>`)
+
+| Regione    | Comuni | UO    | AOO | Unioni | Fallback | NON TROVATO | Coverage |
+|------------|-------:|------:|----:|-------:|---------:|------------:|---------:|
+| Lombardia  | 1.502  | 469   | 6   | 15     | 1.046    | 1           | 99,9 %   |
+| Toscana    |   273  | 166   | 0   | 24     |    92    | 0           | 100 %    |
+| V. d'Aosta |    74  |  18   | 0   |  0     |    56    | 0           | 100 %    |
+
+## Backlog (P2)
+- Validazione MX delle PEC scoperte via scraping.
+- Cache persistente dei risultati di scraping per ripartire da dove ci si è fermati.
+- Modulo opzionale di invio batch PEC (SQLite tracking, rate limiting).
 
 ## Next tasks
-- Eventuale modulo di invio PEC batch (con allegati e tracking in SQLite) per
-  trasformare lo script in uno strumento operativo end-to-end.
+- Possibile modulo `--send-pec` per trasformare lo script in strumento operativo end-to-end.
