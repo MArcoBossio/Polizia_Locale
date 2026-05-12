@@ -30,6 +30,7 @@ equivalenti, ed escludendo Polizia di Stato, Stradale, Provinciale, ecc.
 
 ```bash
 pip install -r requirements-cli.txt
+playwright install chromium       # solo la prima volta (per la ricerca web)
 ```
 
 ## Utilizzo
@@ -176,3 +177,4 @@ MIT — usa liberamente, riconoscendo la paternità.
 
 Pull request benvenute. Per problemi/bug aprire un issue indicando regione
 testata e comune specifico in cui la mail PL non è stata trovata.
+.

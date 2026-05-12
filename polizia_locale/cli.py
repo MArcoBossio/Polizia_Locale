@@ -269,6 +269,52 @@ def _run(region_code: str, region_name: str, args) -> int:
                 results.append(_scrape_one(c))
                 time.sleep(args.sleep)
 
+        # Step 5: ricerca web per i comuni che lo scraping non ha trovato
+        still_missing: list = [c for c, r in results if r is None]
+        web_results: dict[str, tuple[set, set]] = {}
+        if args.web_search and still_missing:
+            print(
+                f"      Ricerca web (Bing+Playwright) per {len(still_missing)} comuni "
+                f"residui..."
+            )
+            try:
+                from .web_search import WebSearchFinder
+                finder = WebSearchFinder()
+                finder.start()
+                try:
+                    web_workers = min(args.workers, 4)  # browser pesante: limita parallelismo
+
+                    def _web_one(c):
+                        site = site_by_istat.get(c.codice_istat, "")
+                        from urllib.parse import urlparse
+                        host = ""
+                        if site:
+                            u = site if site.startswith("http") else "https://" + site
+                            host = urlparse(u).netloc.lstrip("www.")
+                        try:
+                            return c, finder.search_polizia_locale(
+                                c.nome, c.provincia, domain_hint=host
+                            )
+                        except Exception:
+                            return c, (set(), set())
+
+                    with ThreadPoolExecutor(max_workers=web_workers) as pool:
+                        futures = [pool.submit(_web_one, c) for c in still_missing]
+                        for fut in tqdm(
+                            as_completed(futures),
+                            total=len(futures),
+                            desc="Web search",
+                            unit="comune",
+                        ):
+                            c, (pec, mail) = fut.result()
+                            if pec or mail:
+                                web_results[c.codice_istat] = (pec, mail)
+                finally:
+                    finder.stop()
+            except Exception as e:
+                print(f"      Avviso: ricerca web non disponibile ({e}). "
+                      f"Installa Playwright con: playwright install chromium")
+
         for c, res in results:
             if res:
                 d = res.as_dict()
@@ -280,6 +326,26 @@ def _run(region_code: str, region_name: str, args) -> int:
                     }
                 )
                 rows.append(d)
+                continue
+            # Step 5b: usa risultato web search se disponibile
+            web = web_results.get(c.codice_istat)
+            if web and (web[0] or web[1]):
+                pec_set, mail_set = web
+                rows.append(
+                    {
+                        "comune": c.nome,
+                        "codice_istat": c.codice_istat,
+                        "provincia": c.provincia,
+                        "sigla_provincia": c.sigla_provincia,
+                        "regione": c.regione,
+                        "denominazione_ente": f"Comune di {c.nome}",
+                        "descrizione_uo": "Polizia Locale (da ricerca web)",
+                        "pec": " | ".join(sorted(pec_set)),
+                        "email": " | ".join(sorted(mail_set)),
+                        "sito": site_by_istat.get(c.codice_istat, ""),
+                        "fonte": "WebSearch",
+                    }
+                )
                 continue
             # Fallback PEC del comune (opt-in)
             info = pec_comune_by_istat.get(c.codice_istat)
@@ -517,6 +583,15 @@ def build_parser() -> argparse.ArgumentParser:
         "manca una mail/PEC PL-specifica. Marcata come 'PEC generica del Comune'.",
     )
     p.set_defaults(include_comune_pec=False)
+    p.add_argument(
+        "--no-web-search",
+        dest="web_search",
+        action="store_false",
+        help="Disabilita la ricerca web (Bing+Playwright) per i comuni "
+        "in cui lo scraping diretto non trova mail PL-specifiche. "
+        "Per default è ATTIVA (richiede Playwright + browser Chromium).",
+    )
+    p.set_defaults(web_search=True)
     p.add_argument(
         "--no-pdf",
         dest="pdf_extract",
