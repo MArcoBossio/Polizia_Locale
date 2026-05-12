@@ -30,8 +30,21 @@ equivalenti, ed escludendo Polizia di Stato, Stradale, Provinciale, ecc.
 
 ```bash
 pip install -r requirements-cli.txt
-playwright install chromium       # solo la prima volta (per la ricerca web)
+playwright install chromium       # solo se userai il backend Bing+Playwright
 ```
+
+### Configurazione (opzionale ma raccomandata)
+
+Crea un file `.env` nella root del progetto:
+
+```bash
+# Brave Search API key (gratis 2.000 query/mese — https://brave.com/search/api/)
+BRAVE_API_KEY=tua_chiave_qui
+```
+
+Se il file `.env` contiene `BRAVE_API_KEY`, lo script userà automaticamente
+Brave Search per il livello 6 (molto più veloce). In assenza della chiave
+cade su Playwright+Bing.
 
 ## Utilizzo
 
@@ -80,15 +93,19 @@ ls ./output/
 # polizia_locale_toscana.json
 ```
 
-### Esempio reale Toscana (273 comuni, ~3 min, strict mode)
+### Esempio reale Toscana (273 comuni, ~22 min, strict mode + Brave)
 
 | Fonte                              | Comuni | Esempio mail/PEC |
 |------------------------------------|-------:|------------------|
-| `IndicePA` (PL diretta)            |     64 | `polizialocale@comune.grosseto.it`, `direz.pol.municipale@pec.comune.fi.it` |
+| `IndicePA` (PL diretta)            |     64 | `direz.pol.municipale@pec.comune.fi.it`, `polizialocale@comune.grosseto.it` |
 | `IndicePA-Unione` (PL associata)   |     17 | `polizialocale.unionevaldera@postacert.toscana.it` |
-| `ScrapingSitoComune` (BFS sito)    |     42 | `polizialocale@comune.prato.it`, `polizia.municipale@comune.fiesole.fi.it` |
-| `NON TROVATO`                      |    151 | (no mail PL pubblica registrata) |
-| **Coverage strict**                | **122/273 (45 %)** | mail genuinamente PL-specifiche |
+| `ScrapingSitoComune` (BFS sito)    |     43 | `polizialocale@comune.prato.it`, `centraleoperativapm@comune.lucca.it` |
+| `WebSearch` (Brave API)            |     51 | `poliziamunicipale@comune.massa.ms.it`, `polizialocale@comune.pistoia.it` |
+| `NON TROVATO`                      |     99 | (no mail PL pubblica) |
+| **Coverage strict**                | **174/273 (64 %)** | mail genuinamente PL-specifiche |
+
+**Tutti i 10 capoluoghi della Toscana coperti**: Firenze, Prato, Pisa, Livorno,
+Siena, Arezzo, Pistoia, Lucca, Massa, Grosseto.
 
 ### Comportamento per i comuni "NON TROVATO"
 

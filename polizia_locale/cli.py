@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +20,22 @@ from .unioni import (
     find_unioni_with_polizia_locale,
     match_member_comuni,
 )
+
+
+def _load_env() -> None:
+    """Carica /app/.env se presente (le chiavi API arrivano da lì)."""
+    for path in (".env", "/app/.env", os.path.join(os.path.dirname(__file__), "..", ".env")):
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env()
 
 
 BANNER = r"""
@@ -273,18 +290,19 @@ def _run(region_code: str, region_name: str, args) -> int:
         still_missing: list = [c for c, r in results if r is None]
         web_results: dict[str, tuple[set, set]] = {}
         if args.web_search and still_missing:
+            # priorità a Brave API (se chiave disponibile), fallback a Playwright
+            brave_key = os.environ.get("BRAVE_API_KEY", "").strip()
+            use_brave = bool(brave_key)
+            backend = "Brave Search API" if use_brave else "Bing+Playwright"
             print(
-                f"      Ricerca web (Bing+Playwright) per {len(still_missing)} comuni "
-                f"residui..."
+                f"      Ricerca web ({backend}) per {len(still_missing)} comuni residui..."
             )
             try:
-                from .web_search import WebSearchFinder
-                finder = WebSearchFinder()
-                finder.start()
-                try:
-                    web_workers = min(args.workers, 4)  # browser pesante: limita parallelismo
-
-                    def _web_one(c):
+                if use_brave:
+                    from .brave_search import BraveSearchFinder
+                    finder = BraveSearchFinder()
+                    # Brave free tier: 1 query/sec → sequenziale, niente thread
+                    for c in tqdm(still_missing, desc="Web search", unit="comune"):
                         site = site_by_istat.get(c.codice_istat, "")
                         from urllib.parse import urlparse
                         host = ""
@@ -292,28 +310,50 @@ def _run(region_code: str, region_name: str, args) -> int:
                             u = site if site.startswith("http") else "https://" + site
                             host = urlparse(u).netloc.lstrip("www.")
                         try:
-                            return c, finder.search_polizia_locale(
+                            pec, mail, _ = finder.search_polizia_locale(
                                 c.nome, c.provincia, domain_hint=host
                             )
-                        except Exception:
-                            return c, (set(), set())
-
-                    with ThreadPoolExecutor(max_workers=web_workers) as pool:
-                        futures = [pool.submit(_web_one, c) for c in still_missing]
-                        for fut in tqdm(
-                            as_completed(futures),
-                            total=len(futures),
-                            desc="Web search",
-                            unit="comune",
-                        ):
-                            c, (pec, mail) = fut.result()
                             if pec or mail:
                                 web_results[c.codice_istat] = (pec, mail)
-                finally:
-                    finder.stop()
+                        except Exception:
+                            continue
+                    finder.close()
+                else:
+                    from .web_search import WebSearchFinder
+                    finder = WebSearchFinder()
+                    finder.start()
+                    try:
+                        web_workers = min(args.workers, 4)
+
+                        def _web_one(c):
+                            site = site_by_istat.get(c.codice_istat, "")
+                            from urllib.parse import urlparse
+                            host = ""
+                            if site:
+                                u = site if site.startswith("http") else "https://" + site
+                                host = urlparse(u).netloc.lstrip("www.")
+                            try:
+                                return c, finder.search_polizia_locale(
+                                    c.nome, c.provincia, domain_hint=host
+                                )
+                            except Exception:
+                                return c, (set(), set())
+
+                        with ThreadPoolExecutor(max_workers=web_workers) as pool:
+                            futures = [pool.submit(_web_one, c) for c in still_missing]
+                            for fut in tqdm(
+                                as_completed(futures),
+                                total=len(futures),
+                                desc="Web search",
+                                unit="comune",
+                            ):
+                                c, (pec, mail) = fut.result()
+                                if pec or mail:
+                                    web_results[c.codice_istat] = (pec, mail)
+                    finally:
+                        finder.stop()
             except Exception as e:
-                print(f"      Avviso: ricerca web non disponibile ({e}). "
-                      f"Installa Playwright con: playwright install chromium")
+                print(f"      Avviso: ricerca web non disponibile ({e})")
 
         for c, res in results:
             if res:
