@@ -42,3 +42,47 @@ def download(url: str, dest: Path, max_age_hours: int = 24, force: bool = False)
                     f.write(chunk)
         tmp.replace(dest)
     return dest
+
+
+FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "hotmail.com",
+    "yahoo.com",
+    "libero.it",
+    "virgilio.it",
+    "outlook.com",
+    "tin.it",
+    "tiscali.it",
+    "alice.it",
+    "hotmail.it",
+    "icloud.com",
+    "fastwebnet.it",
+}
+
+
+def is_likely_personal_email(email: str) -> bool:
+    """Heuristics: True se l'email sembra essere personale (provider free o local-part nome.cognome).
+
+    Questo è un filtro euristico, non perfetto. Usa insieme a conferme sul sito.
+    """
+    import re
+
+    if not email or "@" not in email:
+        return False
+    local, domain = email.split("@", 1)
+    domain = domain.lower()
+    local = local.lower()
+    # domini noti di posta personale
+    for d in FREE_EMAIL_DOMAINS:
+        if domain == d or domain.endswith("." + d):
+            return True
+
+    # pattern nome.cognome o nome_cognome -> probabile personale
+    if ("." in local or "_" in local) and all(part.isalpha() and 1 < len(part) < 25 for part in re.split(r"[._]", local) if part):
+        return True
+
+    # local molto breve + digit (es. mrossi123) -> probabile personale
+    if re.search(r"[a-z]{1,3}\d+", local):
+        return True
+
+    return False

@@ -103,12 +103,16 @@ def _is_polizia_locale(descrizione: str) -> bool:
 
 def download_uo() -> str:
     path = cached_path("indicepa_uo.xlsx")
+    if not path.exists():
+        print("      Scaricando dataset UO da IndicePA (14+ MB, attendere...)...") 
     download(UO_XLSX_URL, path, max_age_hours=24)
     return str(path)
 
 
 def download_aoo() -> str:
     path = cached_path("indicepa_aoo.xlsx")
+    if not path.exists():
+        print("      Scaricando dataset AOO da IndicePA (6+ MB, attendere)...")
     download(AOO_XLSX_URL, path, max_age_hours=24)
     return str(path)
 

@@ -9,29 +9,25 @@ import pandas as pd
 
 FIELDS = [
     "comune",
-    "codice_istat",
     "provincia",
     "sigla_provincia",
-    "regione",
-    "denominazione_ente",
-    "codice_ipa",
-    "codice_uni_uo",
-    "descrizione_uo",
+    "mail",
     "pec",
-    "email",
-    "telefono",
-    "indirizzo",
-    "cap",
-    "sito",
-    "pagina",
-    "fonte",
 ]
 
 
 def _normalize_rows(rows: list[dict]) -> list[dict]:
     out = []
     for r in rows:
-        out.append({k: r.get(k, "") for k in FIELDS})
+        out.append(
+            {
+                "comune": r.get("comune", ""),
+                "provincia": r.get("provincia", ""),
+                "sigla_provincia": r.get("sigla_provincia", r.get("sigla", "")),
+                "mail": r.get("email", r.get("mail", "")),
+                "pec": r.get("pec", ""),
+            }
+        )
     return out
 
 

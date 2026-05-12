@@ -27,6 +27,7 @@ from contextlib import suppress
 
 from .indicepa import is_pl_specific_email
 from .scraper import EMAIL_RE, _is_pec
+from .utils import is_likely_personal_email
 
 
 _USER_AGENT = (
@@ -43,13 +44,17 @@ def _build_queries(comune: str, provincia: str) -> list[str]:
     """
     base = comune.strip()
     prov = provincia.strip()
-    q_prov = f"({prov}) " if prov else ""
+    q_prov = f" ({prov})" if prov else ""
     return [
-        f'"polizia locale" {base} {q_prov}mail',
-        f'"polizia municipale" {base} {q_prov}email',
-        f'polizia locale {base} {q_prov}contatti email',
-        f'polizia municipale {base} {q_prov}mail comando',
-        f'vigili urbani {base} {q_prov}mail',
+        f'polizia locale email {base}{q_prov}',
+        f'polizia municipale email {base}{q_prov}',
+        f'polizia locale mail {base}{q_prov}',
+        f'polizia municipale mail {base}{q_prov}',
+        f'"polizia locale" {base}{q_prov} mail',
+        f'"polizia municipale" {base}{q_prov} email',
+        f'polizia locale {base}{q_prov} contatti email',
+        f'polizia municipale {base}{q_prov} mail comando',
+        f'vigili urbani {base}{q_prov} mail',
         f'"polizia locale" "{base}" mail',
         f'"polizia municipale" "{base}" email',
     ]
@@ -142,6 +147,8 @@ class WebSearchFinder:
         comune: str,
         provincia: str = "",
         domain_hint: str = "",
+        extra_queries: list[str] | None = None,
+        strict_pl_local: bool = True,
     ) -> tuple[set[str], set[str]]:
         """Ritorna (pec_set, mail_set) di mail PL-specifiche trovate via Bing.
 
@@ -162,7 +169,17 @@ class WebSearchFinder:
             # accetta dominio identico o sottodominio (es. pec.comune.massa.ms.it)
             return domain == host or domain.endswith("." + host) or host.endswith("." + domain)
 
-        for query in _build_queries(comune, provincia):
+        # formatta eventuali query extra sostituendo i placeholder
+        formatted_extras: list[str] = []
+        if extra_queries:
+            for q in extra_queries:
+                if not q:
+                    continue
+                fq = q.replace("{comune}", comune).replace("{provincia}", provincia).replace("{prov}", provincia)
+                formatted_extras.append(fq)
+
+        queries = formatted_extras + _build_queries(comune, provincia)
+        for query in queries:
             try:
                 html = self._run(self._fetch(query))
             except Exception:
@@ -171,7 +188,10 @@ class WebSearchFinder:
                 continue
             for m in EMAIL_RE.finditer(html):
                 email = m.group(0)
-                if not is_pl_specific_email(email):
+                if strict_pl_local and not is_pl_specific_email(email):
+                    continue
+                # scarta indirizzi personali/di provider gratuiti se non PL-specifici
+                if is_likely_personal_email(email) and not is_pl_specific_email(email):
                     continue
                 if not _domain_ok(email):
                     continue

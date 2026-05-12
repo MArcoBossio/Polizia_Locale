@@ -21,6 +21,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .utils import USER_AGENT
+from .utils import is_likely_personal_email
 
 EMAIL_RE = re.compile(
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
@@ -242,6 +243,9 @@ def _filter_polizia_emails(
             ]
         )
         if not (page_is_polizia or is_pl_local or is_pl_ctx):
+            continue
+        # escludi indirizzi personali e provider gratuiti se non chiaramente PL
+        if is_likely_personal_email(email) and not (page_is_polizia or is_pl_local or is_pl_ctx):
             continue
         # escludi noreply, info generiche solo se il contesto non è chiaro
         if local in {"noreply", "no-reply", "webmaster", "postmaster"}:
