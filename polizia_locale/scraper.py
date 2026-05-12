@@ -160,29 +160,101 @@ def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
     return out
 
 
-def _filter_polizia_emails(pairs: list[tuple[str, str]]) -> tuple[set[str], set[str]]:
-    """Restituisce (pec_set, email_set) limitate al contesto polizia locale."""
+def _filter_polizia_emails(
+    pairs: list[tuple[str, str]],
+    page_is_polizia: bool = False,
+) -> tuple[set[str], set[str]]:
+    """Restituisce (pec_set, email_set) limitate al contesto polizia locale.
+
+    Se `page_is_polizia` è True, accettiamo tutte le mail trovate sulla pagina
+    (perché l'URL/titolo indica chiaramente che la pagina è dedicata alla PL).
+    """
     pec: set[str] = set()
     mail: set[str] = set()
     for email, ctx in pairs:
         local = email.split("@")[0].lower()
         domain = email.split("@", 1)[1].lower() if "@" in email else ""
         ctx_l = ctx.lower()
-        is_pl_local = any(k in local for k in ["polizialocale", "poliziamunicipale", "vigili", "comandopm", "comandopl", "pl.", "pm."])
-        is_pl_ctx = any(k in ctx_l for k in ["polizia local", "polizia municipal", "vigili urbani", "comando p.m", "comando pl", "comando pm"])
-        if not (is_pl_local or is_pl_ctx):
+        is_pl_local = any(
+            k in local
+            for k in [
+                "polizialocale",
+                "poliziamunicipale",
+                "vigili",
+                "comandopm",
+                "comandopl",
+                "pl.",
+                "pm.",
+                "pol.locale",
+                "pol.municipale",
+            ]
+        )
+        is_pl_ctx = any(
+            k in ctx_l
+            for k in [
+                "polizia local",
+                "polizia municipal",
+                "vigili urbani",
+                "comando p.m",
+                "comando pl",
+                "comando pm",
+                "comando di polizia",
+                "polizia urbana",
+            ]
+        )
+        if not (page_is_polizia or is_pl_local or is_pl_ctx):
             continue
         # escludi noreply, info generiche solo se il contesto non è chiaro
-        if local in {"noreply", "no-reply"}:
+        if local in {"noreply", "no-reply", "webmaster", "postmaster"}:
             continue
-        # escludi domini non istituzionali ovvi
-        if domain.endswith(("@example.com", ".png", ".jpg")):
+        # escludi loghi/immagini con estensioni
+        if domain.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")):
+            continue
+        # escludi pattern ovvi di domini fake
+        if "example.com" in domain or "test.it" in domain:
             continue
         if _is_pec(email, ctx):
             pec.add(email)
         else:
             mail.add(email)
     return pec, mail
+
+
+# URL pattern comuni dei comandi/uffici di Polizia Locale sui siti istituzionali
+# (utilizzati prima dei link "candidati" estratti dalla homepage).
+_DIRECT_PATH_HINTS = (
+    "/polizia-locale",
+    "/poliziamunicipale",
+    "/polizia-municipale",
+    "/aree/polizia-locale",
+    "/uffici/polizia-locale",
+    "/uffici/polizia-municipale",
+    "/comando-polizia-locale",
+    "/comando-polizia-municipale",
+    "/vigili-urbani",
+    "/servizi/polizia-locale",
+    "/amministrazione/polizia-locale",
+    "/amministrazione/uffici/polizia-locale",
+)
+
+
+def _path_is_polizia(url: str) -> bool:
+    u = url.lower()
+    return any(
+        kw in u
+        for kw in (
+            "polizia-local",
+            "polizia-municipal",
+            "polizia_local",
+            "polizia_municipal",
+            "poliziamunicipale",
+            "polizialocale",
+            "vigili-urban",
+            "comando-polizia",
+            "comando-pl",
+            "comando-pm",
+        )
+    )
 
 
 def scrape_polizia_locale(

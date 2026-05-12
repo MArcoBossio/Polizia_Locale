@@ -15,6 +15,12 @@ UO_XLSX_URL = (
     "b0aa1f6c-f135-4c8a-b416-396fed4e1a5d/download/unita-organizzative.xlsx"
 )
 
+AOO_XLSX_URL = (
+    "https://indicepa.gov.it/ipa-dati/dataset/"
+    "15c8cc52-749a-4f64-9bd1-9c3bb4f6f3df/resource/"
+    "cdaded04-f84e-4193-a720-47d6d5f422aa/download/aree-organizzative-omogenee.xlsx"
+)
+
 ENTI_XLSX_URL = (
     "https://indicepa.gov.it/ipa-dati/dataset/"
     "5baa3eb8-266e-455a-8de8-b1f434c279b2/resource/"
@@ -97,6 +103,12 @@ def download_uo() -> str:
     return str(path)
 
 
+def download_aoo() -> str:
+    path = cached_path("indicepa_aoo.xlsx")
+    download(AOO_XLSX_URL, path, max_age_hours=24)
+    return str(path)
+
+
 def download_enti() -> str:
     path = cached_path("indicepa_enti.xlsx")
     download(ENTI_XLSX_URL, path, max_age_hours=24)
@@ -105,6 +117,13 @@ def download_enti() -> str:
 
 def _load_uo_df() -> pd.DataFrame:
     path = download_uo()
+    df = pd.read_excel(path, dtype=str, engine="openpyxl")
+    df.columns = [c.strip() for c in df.columns]
+    return df.fillna("")
+
+
+def _load_aoo_df() -> pd.DataFrame:
+    path = download_aoo()
     df = pd.read_excel(path, dtype=str, engine="openpyxl")
     df.columns = [c.strip() for c in df.columns]
     return df.fillna("")
@@ -158,6 +177,47 @@ def find_polizia_locale_uo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
                 indirizzo=str(row.get("Indirizzo", "")).strip(),
                 cap=str(row.get("CAP", "")).strip(),
                 fonte="IndicePA",
+            )
+        )
+    return out
+
+
+def find_polizia_locale_aoo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
+    """Filtra le AOO di IndicePA che sono Polizia Locale/Municipale per i comuni dati.
+
+    Alcuni comuni registrano la Polizia Locale come AOO (registro di protocollo)
+    invece che come UO; per questi è la fonte primaria della PEC.
+    """
+    try:
+        df = _load_aoo_df()
+    except Exception:
+        return []
+    target = {c.zfill(6) for c in istat_codes if c}
+    if "Codice_comune_ISTAT" not in df.columns:
+        return []
+    df["_istat"] = df["Codice_comune_ISTAT"].astype(str).str.strip().str.zfill(6)
+    df = df[df["_istat"].isin(target)]
+    df = df[df["Denominazione_aoo"].apply(_is_polizia_locale)]
+
+    out: list[PoliziaLocaleRecord] = []
+    for _, row in df.iterrows():
+        pec, mail = _extract_mails(row)
+        if not pec and not mail:
+            continue
+        out.append(
+            PoliziaLocaleRecord(
+                codice_istat=row["_istat"],
+                comune="",
+                codice_ipa=str(row.get("Codice_IPA", "")).strip(),
+                denominazione_ente=str(row.get("Denominazione_ente", "")).strip(),
+                codice_uni_uo=str(row.get("Codice_uni_aoo", "")).strip(),
+                descrizione_uo=str(row.get("Denominazione_aoo", "")).strip(),
+                pec=pec,
+                email=mail,
+                telefono=str(row.get("Telefono", "")).strip(),
+                indirizzo=str(row.get("Indirizzo", "")).strip(),
+                cap=str(row.get("CAP", "")).strip(),
+                fonte="IndicePA-AOO",
             )
         )
     return out

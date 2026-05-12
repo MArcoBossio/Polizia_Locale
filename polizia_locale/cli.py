@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from .comuni import load_comuni
 from .exporter import export_all
-from .indicepa import find_polizia_locale_uo, load_enti_index
+from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index
 from .regions import list_regions, resolve_region
 from .scraper import scrape_polizia_locale
 
@@ -49,15 +49,22 @@ def _run(region_code: str, region_name: str, args) -> int:
     comuni = load_comuni(region_code)
     print(f"      {len(comuni)} comuni caricati.")
 
-    print("[2/4] Scarico il dataset Unità Organizzative di IndicePA...")
+    print("[2/4] Scarico i dataset IndicePA (UO + AOO)...")
     istat_codes = [c.codice_istat for c in comuni]
-    found = find_polizia_locale_uo(istat_codes)
-    print(f"      {len(found)} unità 'Polizia Locale/Municipale' trovate su IndicePA.")
+    found_uo = find_polizia_locale_uo(istat_codes)
+    found_aoo = find_polizia_locale_aoo(istat_codes)
+    print(
+        f"      {len(found_uo)} UO + {len(found_aoo)} AOO 'Polizia Locale/Municipale' "
+        f"trovate su IndicePA."
+    )
 
-    # indicizza per codice ISTAT
+    # indicizza per codice ISTAT — UO ha priorità, AOO aggiunto se nuovo comune
     by_istat: dict[str, list] = {}
-    for rec in found:
+    for rec in found_uo:
         by_istat.setdefault(rec.codice_istat, []).append(rec)
+    for rec in found_aoo:
+        if rec.codice_istat not in by_istat:
+            by_istat[rec.codice_istat] = [rec]
 
     enti_idx = None
     if args.scrape or args.include_comune_pec:
@@ -363,13 +370,14 @@ def build_parser() -> argparse.ArgumentParser:
         "(0 = nessun limite, default). Utile per validazione su regioni grandi.",
     )
     p.add_argument(
-        "--include-comune-pec",
-        action="store_true",
+        "--no-comune-pec",
         dest="include_comune_pec",
-        help="Per i comuni in cui la PL non risulta avere una mail/PEC dedicata, "
-        "usa come fallback la PEC istituzionale del Comune (chiaramente marcata "
-        "come 'PEC generica del Comune'). Disabilitato per default.",
+        action="store_false",
+        help="Disabilita il fallback con la PEC istituzionale del Comune. "
+        "Per default, se la Polizia Locale non ha una mail/PEC dedicata, viene "
+        "restituita la PEC del Comune (marcata come 'PEC generica del Comune').",
     )
+    p.set_defaults(include_comune_pec=True)
     return p
 
 

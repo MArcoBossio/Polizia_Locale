@@ -48,23 +48,21 @@ python run.py --list-regions
 ```text
 -o, --output DIR        Cartella di output (default: ./output)
 --no-scrape             Usa solo IndicePA, niente scraping dei siti comunali
+--no-comune-pec         Disabilita il fallback con la PEC istituzionale del Comune
+                        (per default è ATTIVO: garantisce copertura ~100%)
 --workers N             Thread paralleli per lo scraping (default 8)
 --scrape-limit N        Limita lo scraping ai primi N comuni mancanti (utile in fase di test)
---include-comune-pec    Per i comuni in cui la Polizia Locale non ha una mail/PEC
-                        dedicata, usa come fallback la PEC istituzionale del
-                        Comune dal dataset IndicePA Enti, marcata chiaramente.
 --sleep SEC             Pausa tra richieste di scraping in modalità sequenziale (default 0.5)
 --timeout SEC           Timeout HTTP scraping (default 15)
 ```
 
-### Esempio reale
-
-Lombardia (1.502 comuni, ~2 minuti totali con `--workers 8 --include-comune-pec`):
+### Esempio reale (Lombardia, 1.502 comuni, ~2 min)
 
 | Fonte                            | Comuni |
 |----------------------------------|-------:|
-| `IndicePA` (UO PL dedicata)      |    433 |
-| `IndicePA-Comune (fallback)`     |  1.066 |
+| `IndicePA` (UO PL dedicata)      |    434 |
+| `IndicePA-AOO` (AOO PL)          |      6 |
+| `IndicePA-Comune (fallback)`     |  1.060 |
 | `ScrapingSitoComune`             |      1 |
 | `NON TROVATO`                    |      1 |
 | **Totale copertura**             |  **1.500 / 1.502 (99,9 %)** |
@@ -93,6 +91,28 @@ Colonne:
 | pec                  | Indirizzo/i PEC ufficiale/i                            |
 | email                | Email ordinaria/e                                      |
 | telefono / indirizzo | Recapiti UO                                            |
+| sito / pagina        | Sito comunale e pagina dove è stato trovato (scraping) |
+| fonte                | "IndicePA", "ScrapingSitoComune" o "NON TROVATO"       |
+
+## Cache
+
+I dataset ISTAT e IndicePA vengono scaricati una sola volta e tenuti in cache
+per 24 ore (7 giorni per ISTAT) in:
+
+```
+~/.cache/polizia_locale/
+```
+
+Puoi sovrascrivere la cartella con la variabile d'ambiente
+`POLIZIA_LOCALE_CACHE`.
+
+## Note legali
+
+I dataset di IndicePA sono open data pubblicati da AgID. Le PEC delle PA
+italiane sono pubbliche per legge. Lo scraping dei siti comunali utilizza
+contenuti pubblici e introduce una pausa tra le richieste; usalo
+responsabilmente.
+        |
 | sito / pagina        | Sito comunale e pagina dove è stato trovato (scraping) |
 | fonte                | "IndicePA", "ScrapingSitoComune" o "NON TROVATO"       |
 
