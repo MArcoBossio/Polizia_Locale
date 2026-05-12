@@ -126,27 +126,66 @@ def find_comune_website(session: requests.Session, comune: str, provincia: str) 
     return url
 
 
-def _candidate_links(soup: BeautifulSoup, base: str) -> list[str]:
-    links = []
+def _candidate_links(soup: BeautifulSoup, base: str) -> list[tuple[str, int]]:
+    """Estrae i link interni candidati con un punteggio di priorità.
+
+    Score più alto = più specifico per la Polizia Locale.
+      3 → href/testo contiene "polizia local/municipal", "vigili urbani",
+          "comando pl/pm", "comando polizia"
+      2 → href/testo contiene "polizia", "vigili", "comando"
+      1 → href/testo contiene "uffici", "amministrazione", "contatti"
+    """
+    scored: list[tuple[str, int]] = []
+    base_host = urlparse(base).netloc
     for a in soup.find_all("a", href=True):
         text = (a.get_text() or "").strip().lower()
         href = a["href"]
-        if any(k in (text + " " + href.lower()) for k in [
-            "polizia local", "polizia municipal", "vigili urbani",
-            "comando p.m", "comando pl", "comando pm",
-            "contatti", "amministrazione", "uffici",
-        ]):
-            absu = urljoin(base, href)
-            if absu.startswith("http"):
-                links.append(absu)
-    # rimuovi duplicati mantenendo ordine
+        hay = (text + " " + href.lower())
+        score = 0
+        if any(
+            k in hay
+            for k in [
+                "polizia local",
+                "polizia municipal",
+                "polizia-local",
+                "polizia-municipal",
+                "polizia_local",
+                "polizia_municipal",
+                "vigili urbani",
+                "vigili-urbani",
+                "comando p.m",
+                "comando pl",
+                "comando pm",
+                "comando polizia",
+                "comando-polizia",
+            ]
+        ):
+            score = 3
+        elif any(k in hay for k in ["polizia", "vigili", "comando"]):
+            score = 2
+        elif any(k in hay for k in ["uffici", "amministrazione/uffici", "amministrazione", "punto_contatto", "contatti"]):
+            score = 1
+        if score == 0:
+            continue
+        absu = urljoin(base, href)
+        if not absu.startswith("http"):
+            continue
+        # solo link interni allo stesso dominio
+        if urlparse(absu).netloc and urlparse(absu).netloc != base_host:
+            continue
+        # niente media/asset
+        if any(absu.lower().endswith(ext) for ext in (".jpg", ".png", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip")):
+            continue
+        scored.append((absu, score))
+    # ordina per score desc, mantieni ordine di apparizione a parità di score
     seen = set()
-    out = []
-    for u in links:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out[:8]
+    out: list[tuple[str, int]] = []
+    for url, score in sorted(scored, key=lambda x: -x[1]):
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append((url, score))
+    return out
 
 
 def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
@@ -220,21 +259,48 @@ def _filter_polizia_emails(
     return pec, mail
 
 
-# URL pattern comuni dei comandi/uffici di Polizia Locale sui siti istituzionali
-# (utilizzati prima dei link "candidati" estratti dalla homepage).
+# URL pattern comuni dei comandi/uffici di Polizia Locale sui siti istituzionali.
+# Includiamo varianti italiane e con prefisso /it (CMS Drupal/Plone della PA).
 _DIRECT_PATH_HINTS = (
     "/polizia-locale",
-    "/poliziamunicipale",
     "/polizia-municipale",
-    "/aree/polizia-locale",
-    "/uffici/polizia-locale",
-    "/uffici/polizia-municipale",
+    "/poliziamunicipale",
+    "/polizialocale",
     "/comando-polizia-locale",
     "/comando-polizia-municipale",
     "/vigili-urbani",
+    "/aree/polizia-locale",
+    "/aree/polizia-municipale",
+    "/aree/comando-polizia-municipale",
+    "/uffici/polizia-locale",
+    "/uffici/polizia-municipale",
+    "/uffici/comando-polizia-municipale",
+    "/uffici/comando-polizia-locale",
     "/servizi/polizia-locale",
+    "/servizi/polizia-municipale",
     "/amministrazione/polizia-locale",
+    "/amministrazione/polizia-municipale",
     "/amministrazione/uffici/polizia-locale",
+    "/amministrazione/uffici/polizia-municipale",
+    "/amministrazione/uffici/comando-polizia-municipale",
+    "/amministrazione/uffici/comando-polizia-locale",
+    "/it/polizia-locale",
+    "/it/polizia-municipale",
+    "/it/comando-polizia-municipale",
+    "/it/uffici/polizia-locale",
+    "/it/uffici/polizia-municipale",
+    "/it/amministrazione/uffici/polizia-locale",
+    "/it/amministrazione/uffici/polizia-municipale",
+    "/it/amministrazione/uffici/comando-polizia-municipale",
+    "/it/amministrazione/uffici/comando-polizia-locale",
+    "/it/aree/polizia-municipale",
+    "/it/aree/polizia-locale",
+    "/it/servizi/polizia-locale",
+    "/it/servizi/polizia-municipale",
+    "/punto_contatto/polizia-municipale",
+    "/punto_contatto/polizia-locale",
+    "/it/punto_contatto/polizia-municipale",
+    "/it/punto_contatto/polizia-locale",
 )
 
 
@@ -263,7 +329,7 @@ def scrape_polizia_locale(
     codice_istat: str,
     site_hint: str = "",
     timeout: int = 15,
-    total_budget: float = 25.0,
+    total_budget: float = 40.0,
     max_candidates: int = 4,
     strict_pl_local: bool = True,
 ) -> ScrapeResult | None:
@@ -362,25 +428,87 @@ def scrape_polizia_locale(
                 except Exception:
                     continue
 
-        # 3) Homepage + candidate links
+        # 3) Homepage + candidate links con BFS 2 livelli
         if not (pec_all or mail_all):
-            r = session.get(site, timeout=req_timeout)
-            pages_visited.append(r.url)
-            soup = BeautifulSoup(r.text, "html.parser")
-            _harvest(r.text, url_is_pl=False)
+            try:
+                r = session.get(site, timeout=req_timeout)
+                pages_visited.append(r.url)
+                soup = BeautifulSoup(r.text, "html.parser")
+                _harvest(r.text, url_is_pl=False)
 
-            candidates = _candidate_links(soup, base)[:max_candidates]
-            for url in candidates:
-                if time.monotonic() > deadline:
-                    break
-                try:
-                    rr = session.get(url, timeout=req_timeout)
-                    pages_visited.append(rr.url)
-                    _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url))
-                    if pec_all or mail_all:
+                # Livello 1: visita i link più specifici prima
+                candidates = _candidate_links(soup, base)
+                visited_level1: set[str] = set()
+                # priorità: prima score=3, poi 2, poi 1 (incluso uffici/amm)
+                lvl1_high = [u for u, s in candidates if s == 3][:6]
+                lvl1_med = [u for u, s in candidates if s == 2][:4]
+                lvl1_low = [u for u, s in candidates if s == 1][:6]
+                queue_lvl1 = lvl1_high + lvl1_med + lvl1_low
+
+                for url in queue_lvl1:
+                    if time.monotonic() > deadline or (pec_all or mail_all):
                         break
-                except Exception:
-                    continue
+                    if url in visited_level1:
+                        continue
+                    visited_level1.add(url)
+                    try:
+                        rr = session.get(url, timeout=req_timeout, allow_redirects=True)
+                        if rr.status_code != 200:
+                            continue
+                        pages_visited.append(rr.url)
+                        is_pl = _path_is_polizia(rr.url) or _path_is_polizia(url)
+                        _harvest(rr.text, url_is_pl=is_pl)
+                        if pec_all or mail_all:
+                            break
+                        # Livello 2: se la pagina è un indice "uffici" o
+                        # "amministrazione", scendi cercando link a PL
+                        sub_soup = BeautifulSoup(rr.text, "html.parser")
+                        lvl2 = _candidate_links(sub_soup, base)
+                        # ora accettiamo score=3 e score=2 (PL/polizia/vigili/comando)
+                        lvl2_targets = [
+                            u for u, s in lvl2 if s >= 2 and u not in visited_level1
+                        ][:6]
+                        for u2 in lvl2_targets:
+                            if time.monotonic() > deadline or (pec_all or mail_all):
+                                break
+                            visited_level1.add(u2)
+                            try:
+                                rr2 = session.get(u2, timeout=req_timeout, allow_redirects=True)
+                                if rr2.status_code != 200:
+                                    continue
+                                pages_visited.append(rr2.url)
+                                is_pl2 = _path_is_polizia(rr2.url) or _path_is_polizia(u2)
+                                _harvest(rr2.text, url_is_pl=is_pl2)
+                                if pec_all or mail_all:
+                                    break
+                                # Livello 3 (solo se la pagina visitata è un indice
+                                # PL "comando/polizia/vigili" → cerca pagine
+                                # dettaglio interne)
+                                if is_pl2:
+                                    sub2 = BeautifulSoup(rr2.text, "html.parser")
+                                    lvl3 = _candidate_links(sub2, base)
+                                    for u3, s3 in lvl3:
+                                        if s3 < 2 or u3 in visited_level1:
+                                            continue
+                                        if time.monotonic() > deadline or (pec_all or mail_all):
+                                            break
+                                        visited_level1.add(u3)
+                                        try:
+                                            rr3 = session.get(u3, timeout=req_timeout, allow_redirects=True)
+                                            if rr3.status_code != 200:
+                                                continue
+                                            pages_visited.append(rr3.url)
+                                            _harvest(rr3.text, url_is_pl=True)
+                                            if pec_all or mail_all:
+                                                break
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+            except Exception:
+                pass
     except Exception:
         if not (pec_all or mail_all):
             return None

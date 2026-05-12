@@ -79,21 +79,21 @@ ls ./output/
 # polizia_locale_toscana.json
 ```
 
-### Esempio reale Toscana (273 comuni, ~2 min, strict mode)
+### Esempio reale Toscana (273 comuni, ~3 min, strict mode)
 
 | Fonte                              | Comuni | Esempio mail/PEC |
 |------------------------------------|-------:|------------------|
 | `IndicePA` (PL diretta)            |     64 | `polizialocale@comune.grosseto.it`, `direz.pol.municipale@pec.comune.fi.it` |
-| `IndicePA-Unione` (PL associata)   |     36 | `polizialocale.unionevaldera@postacert.toscana.it` |
-| `ScrapingSitoComune` (sito comune) |     19 | `centraleoperativapm@comune.lucca.it` |
-| `NON TROVATO`                      |    155 | (no mail PL pubblica registrata) |
-| **Coverage strict**                | **118/273 (43 %)** | mail genuinamente PL-specifiche |
+| `IndicePA-Unione` (PL associata)   |     17 | `polizialocale.unionevaldera@postacert.toscana.it` |
+| `ScrapingSitoComune` (BFS sito)    |     42 | `polizialocale@comune.prato.it`, `polizia.municipale@comune.fiesole.fi.it` |
+| `NON TROVATO`                      |    151 | (no mail PL pubblica registrata) |
+| **Coverage strict**                | **122/273 (45 %)** | mail genuinamente PL-specifiche |
 
 ### Comportamento per i comuni "NON TROVATO"
 
 Significa che la Polizia Locale di quel comune **non ha una casella mail
-pubblicamente esposta** né su IndicePA né sul sito istituzionale. Per quei
-comuni puoi:
+pubblicamente esposta** né su IndicePA né sul sito istituzionale (in HTML
+plain). Per quei comuni puoi:
 
 1. Rilanciare con `--include-comune-pec` per usare come fallback la PEC
    istituzionale del Comune (es. `comune.X@postacert.regione.it`).

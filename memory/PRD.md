@@ -52,7 +52,39 @@
   - `python run.py Lombardia --scrape-limit 15 --workers 8 --include-comune-pec`
     → **1.500 / 1.502 comuni coperti (99,9 %)** in ~2 minuti.
 
-## Aggiornamenti del 11/05 (fix Prato + arricchimento PEC + filtro provincia)
+## Aggiornamenti 11/05 — ricerca profonda (BFS 3 livelli)
+- **BFS 3 livelli sui siti comunali**: oltre ai 38+ path diretti, lo scraper
+  esplora la homepage, segue link "uffici/amministrazione" (livello 1) e da
+  quelli scende fino a 3 livelli per raggiungere pagine come
+  `/it/amministrazione/uffici/comando-polizia-municipale/archivio61_0_135.html`.
+- **Candidate links con priorità**: i link vengono pesati (score 3 =
+  polizia local/municipal/vigili/comando | score 2 = polizia/vigili/comando |
+  score 1 = uffici/amministrazione/contatti) e visitati in ordine.
+- **Sottodomini dedicati**: dopo i path diretti vengono provati `pm.<dom>`,
+  `pl.<dom>`, `polizia.<dom>` con timeout aggressivo.
+- **Filtro `is_pl_specific_email` esteso**: accetta local-part che finiscono
+  con `pm`/`pl` anche senza separatore (es. `centraleoperativapm@`,
+  `segreteriapm@`).
+- **`--include-comune-pec` ora OFF di default**: rispetto del requisito
+  "niente di più niente di meno". L'utente lo può attivare esplicitamente.
+- **Fix filtro Unioni**: niente più fallback alla homepage (era causa di
+  falsi positivi tipo Milano ← Unione Basiano-Masate). Escludi anche i
+  capoluoghi di provincia (mai membri di Unioni).
+
+## Risultati Toscana (strict mode, BFS 3 livelli, ~3 min)
+- 64 IndicePA + 17 Unione + 42 Scraping = **122 comuni con mail PL-specifica**
+- Prato: `polizialocale@comune.prato.it` ✓ (trovata via BFS 3 livelli)
+- Firenze, Grosseto, Lucca, Arezzo, Viareggio, Carrara: tutti ok
+- 151 NON TROVATO = realmente senza mail PL pubblica
+
+## Backlog (P2)
+- Validazione MX/SMTP delle PEC scoperte
+- Cache persistente dei risultati di scraping
+- Estrazione mail da PDF (alcuni Comuni le mettono solo in PDF ordinanze)
+- Modulo di invio batch PEC
+
+## Next tasks
+- Possibile modulo `--send-pec` per invio batch.
 - **Bug fix regex Polizia Locale**: il pattern di riconoscimento ora accetta
   separatori `_`, `.`, `-` tra "polizia" e "locale/municipale" (es.
   `Polizia_Municipale` su IndicePA). Recupera ~60 capoluoghi che prima
