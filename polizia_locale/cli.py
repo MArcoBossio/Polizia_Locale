@@ -319,7 +319,9 @@ def _run(region_code: str, region_name: str, args) -> int:
         for c, scrape_result in results:
             if scrape_result is None:
                 continue
-            pec_found, mail_found, _source = scrape_result
+            # Estrai pec e email dalla ScrapeResult e converti in set
+            pec_found = {e.strip() for e in scrape_result.pec.split(" | ") if e.strip()}
+            mail_found = {e.strip() for e in scrape_result.email.split(" | ") if e.strip()}
             pec_verified, mail_verified = _verify_scraped_result(c, pec_found, mail_found)
             if pec_verified or mail_verified:
                 scrape_verified[c.codice_istat] = (pec_verified, mail_verified)
