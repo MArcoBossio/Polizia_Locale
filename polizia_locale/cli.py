@@ -310,9 +310,11 @@ def _run(region_code: str, region_name: str, args) -> int:
                             u = site if site.startswith("http") else "https://" + site
                             host = urlparse(u).netloc.lstrip("www.")
                         try:
-                            pec, mail, _ = finder.search_polizia_locale(
+                            result = finder.search_polizia_locale(
                                 c.nome, c.provincia, domain_hint=host
                             )
+                            # Brave ritorna (pec, mail, sources), WebSearchFinder (pec, mail)
+                            pec, mail = result[:2]
                             if pec or mail:
                                 web_results[c.codice_istat] = (pec, mail)
                         except Exception:

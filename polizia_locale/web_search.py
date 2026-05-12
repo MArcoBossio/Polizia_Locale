@@ -85,9 +85,16 @@ class WebSearchFinder:
 
         async def _init():
             from playwright.async_api import async_playwright
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True)
-            self._ready.set()
+            try:
+                print("[DEBUG] Avvio Playwright...")
+                self._playwright = await async_playwright().start()
+                print("[DEBUG] Lancio Chromium...")
+                self._browser = await self._playwright.chromium.launch(headless=True)
+                print("[DEBUG] Chromium avviato OK")
+                self._ready.set()
+            except Exception as e:
+                print(f"[ERROR] Fallita inizializzazione browser: {e}")
+                self._ready.set()
 
         self._loop.run_until_complete(_init())
         self._loop.run_forever()
