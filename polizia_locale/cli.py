@@ -248,6 +248,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                     c.codice_istat,
                     site_hint=site_hint,
                     timeout=args.timeout,
+                    pdf_extract=args.pdf_extract,
                 )
             except Exception:
                 return c, None
@@ -516,6 +517,15 @@ def build_parser() -> argparse.ArgumentParser:
         "manca una mail/PEC PL-specifica. Marcata come 'PEC generica del Comune'.",
     )
     p.set_defaults(include_comune_pec=False)
+    p.add_argument(
+        "--no-pdf",
+        dest="pdf_extract",
+        action="store_false",
+        help="Disabilita l'estrazione di mail dai PDF linkati nelle pagine "
+        "comunali. Per default è ATTIVA (alcuni comuni espongono la mail "
+        "della PL solo in ordinanze/organigrammi PDF).",
+    )
+    p.set_defaults(pdf_extract=True)
     p.add_argument(
         "--no-strict",
         dest="strict",

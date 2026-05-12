@@ -332,6 +332,7 @@ def scrape_polizia_locale(
     total_budget: float = 40.0,
     max_candidates: int = 4,
     strict_pl_local: bool = True,
+    pdf_extract: bool = True,
 ) -> ScrapeResult | None:
     """Cerca PEC/email della Polizia Locale sul sito comunale.
 
@@ -503,6 +504,30 @@ def scrape_polizia_locale(
                                                 break
                                         except Exception:
                                             continue
+                                    # estrazione PDF: se la pagina indice è PL,
+                                    # cerca PDF allegati e estrai mail
+                                    if not (pec_all or mail_all) and pdf_extract:
+                                        from .pdf_extractor import (
+                                            extract_emails_from_pdf_url,
+                                            find_pdf_links,
+                                        )
+                                        from .indicepa import is_pl_specific_email
+                                        pdfs = find_pdf_links(rr2.text, base, limit=3)
+                                        for pdf_url in pdfs:
+                                            if time.monotonic() > deadline or (pec_all or mail_all):
+                                                break
+                                            pairs = extract_emails_from_pdf_url(session, pdf_url, timeout=6)
+                                            for em, ctx in pairs:
+                                                if strict_pl_local:
+                                                    if is_pl_specific_email(em):
+                                                        if _is_pec(em, ctx):
+                                                            pec_all.add(em)
+                                                        else:
+                                                            mail_all.add(em)
+                                                else:
+                                                    p2, m2 = _filter_polizia_emails([(em, ctx)], page_is_polizia=True)
+                                                    pec_all.update(p2)
+                                                    mail_all.update(m2)
                             except Exception:
                                 continue
                     except Exception:

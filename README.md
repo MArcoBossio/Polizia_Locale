@@ -54,12 +54,12 @@ python run.py --list-regions
 -o, --output DIR        Cartella di output (default: ./output)
 --no-scrape             Disabilita lo scraping dei siti comunali
 --no-expand-unioni      Disabilita l'espansione delle Unioni/Consorzi PL
+--no-pdf                Disabilita l'estrazione di mail dai PDF allegati
+--no-strict             Accetta anche PEC generiche del Comune da IndicePA
 --workers N             Thread paralleli (default 8)
 --scrape-limit N        Limita lo scraping ai primi N comuni mancanti
 --include-comune-pec    Includi la PEC istituzionale del Comune come
-                        fallback quando manca una PL-specifica (OFF di default)
---no-strict             Disabilita il filtro strict (accetta anche le PEC
-                        generiche del Comune registrate come UO della PL)
+                        fallback per i comuni senza PL-specifica (OFF di default)
 --timeout SEC           Timeout HTTP scraping (default 15)
 ```
 
@@ -167,5 +167,12 @@ I dataset di IndicePA sono open data pubblicati da AgID. Le PEC delle PA
 italiane sono pubbliche per legge. Lo scraping dei siti comunali utilizza
 contenuti pubblici e introduce una pausa tra le richieste; usalo
 responsabilmente.
-ieste; usalo
-responsabilmente.
+
+## Licenza
+
+MIT — usa liberamente, riconoscendo la paternità.
+
+## Contributi
+
+Pull request benvenute. Per problemi/bug aprire un issue indicando regione
+testata e comune specifico in cui la mail PL non è stata trovata.

@@ -1,0 +1,102 @@
+"""Estrazione di email dai PDF linkati nelle pagine comunali.
+
+Alcuni Comuni espongono la mail della Polizia Locale solo in PDF (ordinanze,
+organigrammi, contatti uffici). Questo modulo scarica un PDF, ne estrae il
+testo con `pypdf` e cerca le mail.
+"""
+from __future__ import annotations
+
+import io
+import re
+
+import requests
+
+from pypdf import PdfReader
+
+from .scraper import EMAIL_RE
+
+
+def extract_emails_from_pdf_url(
+    session: requests.Session, url: str, timeout: int = 8, max_size_bytes: int = 5_000_000
+) -> list[tuple[str, str]]:
+    """Scarica un PDF e ritorna lista (email, contesto_breve).
+    Limita a `max_size_bytes` (default 5MB) per evitare download enormi.
+    """
+    try:
+        r = session.get(url, timeout=timeout, stream=True)
+        if r.status_code != 200:
+            return []
+        ct = r.headers.get("Content-Type", "").lower()
+        if "pdf" not in ct and not url.lower().endswith(".pdf"):
+            return []
+        content = b""
+        for chunk in r.iter_content(chunk_size=64 * 1024):
+            content += chunk
+            if len(content) > max_size_bytes:
+                return []  # PDF troppo grande, salta
+    except Exception:
+        return []
+
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        # limito a max 30 pagine per evitare PDF enormi (es. piani regolatori)
+        pages = reader.pages[:30]
+        text = " \n ".join(p.extract_text() or "" for p in pages)
+    except Exception:
+        return []
+
+    out: list[tuple[str, str]] = []
+    for m in EMAIL_RE.finditer(text):
+        start = max(0, m.start() - 80)
+        end = min(len(text), m.end() + 80)
+        out.append((m.group(0), text[start:end]))
+    return out
+
+
+def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:
+    """Estrae fino a `limit` URL di PDF dalla pagina, prioritizzando quelli
+    che hanno nel nome o nel testo del link parole chiave PL.
+    """
+    from urllib.parse import urljoin
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    scored: list[tuple[str, int]] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = (a.get_text() or "").lower()
+        if not href.lower().endswith(".pdf") and ".pdf" not in href.lower():
+            continue
+        absu = urljoin(base, href)
+        if not absu.startswith("http"):
+            continue
+        hay = (text + " " + href.lower())
+        if any(
+            k in hay
+            for k in [
+                "polizia local",
+                "polizia municipal",
+                "polizia-local",
+                "polizia-municipal",
+                "vigili urbani",
+                "vigili-urbani",
+                "comando polizia",
+                "comando-polizia",
+                "contatti",
+                "organigramma",
+                "uffici",
+            ]
+        ):
+            score = 2 if "polizia" in hay or "vigili" in hay else 1
+            scored.append((absu, score))
+    # ordina e dedup
+    seen: set[str] = set()
+    out: list[str] = []
+    for url, _ in sorted(scored, key=lambda x: -x[1]):
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
