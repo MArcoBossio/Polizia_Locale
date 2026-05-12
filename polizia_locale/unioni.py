@@ -66,9 +66,9 @@ def find_unioni_with_polizia_locale(region_code: str | None = None) -> list[Unio
     è nella stessa regione (evita falsi positivi cross-regione).
     """
     from .indicepa import download_enti
-    download_enti()
+    enti_path = download_enti()
     enti = pd.read_excel(
-        "/root/.cache/polizia_locale/indicepa_enti.xlsx",
+        enti_path,
         dtype=str,
         engine="openpyxl",
     ).fillna("")
