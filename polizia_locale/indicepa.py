@@ -28,22 +28,26 @@ ENTI_XLSX_URL = (
 )
 
 # Pattern che identificano la Polizia Locale / Municipale.
-# Includiamo varianti regionali (es. "Comando PM", "Corpo PL", "Vigili Urbani").
+# `_SEP` accetta spazio, underscore, punto o trattino tra le parole, perché
+# IndicePA registra alcune UO come "Polizia_Municipale", "Polizia.Locale",
+# "Polizia-Locale" ecc.
+_SEP = r"[\s._\-]+"
 _PATTERN = re.compile(
-    r"\b("
-    r"polizi[ae]\s+(local[ei]|municipal[ei]|urban[ei])"
-    r"|corpo\s+(di\s+)?polizia\s+(local[ei]|municipal[ei])"
-    r"|comando\s+(di\s+)?polizia\s+(local[ei]|municipal[ei])"
-    r"|comando\s+(di\s+)?vigili\s+urbani"
-    r"|vigili\s+urbani"
-    r")\b",
+    r"(?<!\w)("
+    + r"polizi[ae]" + _SEP + r"(local[ei]|municipal[ei]|urban[ei])"
+    + r"|corpo(" + _SEP + r"di)?" + _SEP + r"polizia" + _SEP + r"(local[ei]|municipal[ei])"
+    + r"|comando(" + _SEP + r"di)?" + _SEP + r"polizia" + _SEP + r"(local[ei]|municipal[ei])"
+    + r"|comando(" + _SEP + r"di)?" + _SEP + r"vigili" + _SEP + r"urbani"
+    + r"|vigili" + _SEP + r"urbani"
+    + r"|polizia" + _SEP + r"(loc|mun)\.?"
+    + r")(?!\w)",
     re.IGNORECASE,
 )
 
 # Esclusioni: evitiamo descrizioni che parlano di "polizia di stato",
 # "polizia stradale", "polizia provinciale", "polizia mortuaria" ecc.
 _EXCLUDE = re.compile(
-    r"\b(polizi[ae]\s+(di\s+stato|stradale|provincial[ei]|mortuari[ae]|giudiziari[ae]|scientifica|amministrativ[ae]|penitenziari[ae]))\b",
+    r"(?<!\w)(polizi[ae]" + _SEP + r"(di" + _SEP + r"stato|stradale|provincial[ei]|mortuari[ae]|giudiziari[ae]|scientifica|amministrativ[ae]|penitenziari[ae]))(?!\w)",
     re.IGNORECASE,
 )
 

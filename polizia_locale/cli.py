@@ -105,11 +105,18 @@ def _run(region_code: str, region_name: str, args) -> int:
                 ):
                     pairs.append(fut.result())
             unioni_in_region = [(u, m) for (u, m) in pairs if m]
+            # mappa codice ISTAT -> sigla provincia (per filtro membri Unione)
+            sigla_by_istat = {c.codice_istat: c.sigla_provincia for c in comuni}
             total_attrib = 0
             for u, matched in unioni_in_region:
+                # provincia della sede dell'Unione: i membri devono appartenere
+                # alla stessa provincia (le Unioni sono per legge sub-provinciali)
+                sigla_unione = sigla_by_istat.get(u.codice_comune_istat_sede, "")
                 for c in matched:
                     if c.codice_istat in by_istat:
                         continue  # ha già una PL diretta
+                    if sigla_unione and c.sigla_provincia != sigla_unione:
+                        continue  # diversa provincia → falso positivo
                     union_records_by_istat.setdefault(c.codice_istat, {
                         "comune": c.nome,
                         "codice_istat": c.codice_istat,
@@ -130,7 +137,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                     total_attrib += 1
             print(
                 f"      Unioni che servono comuni della regione: {len(unioni_in_region)} "
-                f"→ {total_attrib} nuovi comuni associati."
+                f"→ {total_attrib} comuni associati (filtrati per provincia)."
             )
 
     enti_idx = None
@@ -142,8 +149,34 @@ def _run(region_code: str, region_name: str, args) -> int:
             print(f"      Avviso: impossibile caricare il dataset Enti ({e})")
             enti_idx = {}
 
+    # Indice PEC istituzionale del Comune (per Codice_comune_ISTAT) per arricchimento
+    pec_comune_by_istat: dict[str, dict] = {}
+    if enti_idx:
+        for info in enti_idx.values():
+            ci = info.get("codice_istat")
+            if ci:
+                pec_comune_by_istat.setdefault(ci, info)
+
     rows: list[dict] = []
     missing: list = []
+
+    def _enrich_with_comune_pec(d: dict, c) -> dict:
+        """Se il record IndicePA non ha PEC, aggiunge la PEC istituzionale del Comune
+        e la marca come fonte 'IndicePA+PEC Comune'."""
+        if d.get("pec"):
+            return d
+        if not args.include_comune_pec:
+            return d
+        info = pec_comune_by_istat.get(c.codice_istat)
+        if info and info.get("pec_comune"):
+            d["pec"] = info["pec_comune"]
+            # se non c'era email originaria, copia anche quella generica
+            if not d.get("email") and info.get("mail_comune"):
+                d["email"] = info["mail_comune"]
+            d["fonte"] = d.get("fonte", "IndicePA") + " + PEC Comune"
+            if not d.get("sito"):
+                d["sito"] = info.get("sito", "")
+        return d
 
     for c in comuni:
         matches = by_istat.get(c.codice_istat, [])
@@ -158,9 +191,12 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "regione": c.regione,
                     }
                 )
+                d = _enrich_with_comune_pec(d, c)
                 rows.append(d)
         elif c.codice_istat in union_records_by_istat:
-            rows.append(union_records_by_istat[c.codice_istat])
+            rec = union_records_by_istat[c.codice_istat]
+            rec = _enrich_with_comune_pec(rec, c)
+            rows.append(rec)
         else:
             missing.append(c)
 

@@ -52,12 +52,24 @@
   - `python run.py Lombardia --scrape-limit 15 --workers 8 --include-comune-pec`
     → **1.500 / 1.502 comuni coperti (99,9 %)** in ~2 minuti.
 
-## Aggiornamenti del 11/05 (validazione Lombardia + Unioni)
-- **Bug fix `load_enti_index`**: ora filtra `Codice_Categoria == "L6"` per
-  prendere il sito istituzionale del Comune e non quello di scuole/ASL.
-- **Scraper robusto**: split timeout (connect/read), budget temporale per
-  comune (25 s), max 4 pagine candidate, gestione 202 di DuckDuckGo.
-- **Scraping parallelo**: opzione `--workers N` (default 8, ThreadPoolExecutor).
+## Aggiornamenti del 11/05 (fix Prato + arricchimento PEC + filtro provincia)
+- **Bug fix regex Polizia Locale**: il pattern di riconoscimento ora accetta
+  separatori `_`, `.`, `-` tra "polizia" e "locale/municipale" (es.
+  `Polizia_Municipale` su IndicePA). Recupera ~60 capoluoghi che prima
+  finivano in fallback PEC Comune.
+- **Arricchimento PEC**: quando un record IndicePA UO/AOO ha solo email
+  (no PEC valida), viene affiancata la PEC istituzionale del Comune dal
+  dataset Enti. Marcato come `IndicePA + PEC Comune`. Esempio: Prato →
+  email `m.maccioni@comune.prato.it` + PEC `comune.prato@postacert.toscana.it`.
+- **Filtro provincia Unioni**: i comuni attribuiti a un'Unione devono
+  appartenere alla stessa provincia della sede dell'Unione (le Unioni sono
+  per legge sub-provinciali). Risolto falso positivo Milano ← Unione di
+  Basiano e Masate.
+- **Bug fix `load_enti_index`**: filtra `Codice_Categoria == "L6"` per il
+  sito istituzionale corretto del Comune (no scuole/ASL).
+- **Scraper robusto**: split timeout (connect/read), budget temporale (25s),
+  max 4 pagine candidate, gestione 202 di DuckDuckGo.
+- **Scraping parallelo**: opzione `--workers N` (default 8).
 - **Opzione `--scrape-limit N`** per test/validazione su regioni grandi.
 - **Opzione `--no-comune-pec`**: per default è ATTIVO il fallback con la PEC
   istituzionale del Comune dal dataset Enti.
@@ -65,19 +77,17 @@
 - **URL pattern guessing nello scraper**: prova direttamente
   `/polizia-locale`, `/comando-polizia-locale`, `/vigili-urbani`, ecc.
 - **Espansione Unioni di Comuni / Consorzi PL** (`--no-expand-unioni` per
-  disabilitare): identifica gli enti `L18`/`L12`/`L36` che hanno una UO/AOO di
-  Polizia Locale, scrapa il loro sito istituzionale per estrarre i comuni
-  aderenti (text-search inverso sulla lista ISTAT della regione, evita falsi
-  positivi cross-regione filtrando per sede dell'Unione nella stessa regione),
-  e replica la PEC della PL su tutti i comuni membri.
+  disabilitare): identifica gli enti `L18`/`L12`/`L36` con UO/AOO PL,
+  scrapa il loro sito e replica la PEC sui comuni aderenti (filtro
+  provincia per evitare falsi positivi cross-regione).
 
 ## Risultati tipici (default config, comando `python run.py <regione>`)
 
-| Regione    | Comuni | UO    | AOO | Unioni | Fallback | NON TROVATO | Coverage |
-|------------|-------:|------:|----:|-------:|---------:|------------:|---------:|
-| Lombardia  | 1.502  | 469   | 6   | 15     | 1.046    | 1           | 99,9 %   |
-| Toscana    |   273  | 166   | 0   | 24     |    92    | 0           | 100 %    |
-| V. d'Aosta |    74  |  18   | 0   |  0     |    56    | 0           | 100 %    |
+| Regione    | Comuni | con PEC | Coverage |
+|------------|-------:|--------:|---------:|
+| Lombardia  | 1.502  | 1.536/1.537 record | 99,9 % |
+| Toscana    |   273  | 282/282 record     | 100 %  |
+| V. d'Aosta |    74  |  74/74             | 100 %  |
 
 ## Backlog (P2)
 - Validazione MX delle PEC scoperte via scraping.

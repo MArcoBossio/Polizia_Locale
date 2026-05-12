@@ -108,6 +108,11 @@ def find_unioni_with_polizia_locale(region_code: str | None = None) -> list[Unio
             "denominazione": row["Denominazione_ente"].strip(),
             "categoria": row["Codice_Categoria"].strip().upper(),
             "sito": row.get("Sito_istituzionale", "").strip(),
+            "codice_comune_istat_sede": (
+                row.get("Codice_comune_ISTAT", "").strip().zfill(6)
+                if row.get("Codice_comune_ISTAT", "").strip()
+                else ""
+            ),
         }
 
     out: list[UnionePLRecord] = []
@@ -139,6 +144,7 @@ def find_unioni_with_polizia_locale(region_code: str | None = None) -> list[Unio
                 indirizzo=str(row.get("Indirizzo", "")).strip(),
                 cap=str(row.get("CAP", "")).strip(),
                 sito=info.get("sito", ""),
+                codice_comune_istat_sede=info.get("codice_comune_istat_sede", ""),
             )
         )
 
@@ -169,6 +175,7 @@ def find_unioni_with_polizia_locale(region_code: str | None = None) -> list[Unio
                     indirizzo=str(row.get("Indirizzo", "")).strip(),
                     cap=str(row.get("CAP", "")).strip(),
                     sito=info.get("sito", ""),
+                    codice_comune_istat_sede=info.get("codice_comune_istat_sede", ""),
                 )
             )
     except Exception:
