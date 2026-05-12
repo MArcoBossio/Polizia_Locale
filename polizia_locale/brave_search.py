@@ -159,6 +159,7 @@ class BraveSearchFinder:
         provincia: str = "",
         domain_hint: str = "",
         deep: bool = True,
+        max_total_seconds: float = 45.0,
     ) -> tuple[set[str], set[str], list[str]]:
         """Cerca mail PL-specifiche per un comune.
 
@@ -183,8 +184,11 @@ class BraveSearchFinder:
         pec_all: set[str] = set()
         mail_all: set[str] = set()
         sources: list[str] = []
+        start_time = time.monotonic()
 
         for query in _build_queries(comune, provincia):
+            if time.monotonic() - start_time > max_total_seconds:
+                break
             results = self._search(query, count=8)
             if not results:
                 continue
@@ -213,6 +217,8 @@ class BraveSearchFinder:
                     else:
                         candidate_urls.append(url)
                 for url in candidate_urls[:3]:
+                    if time.monotonic() - start_time > max_total_seconds:
+                        break
                     text = self._fetch_page(url)
                     if not text:
                         continue

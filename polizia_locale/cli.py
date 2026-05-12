@@ -302,7 +302,13 @@ def _run(region_code: str, region_name: str, args) -> int:
                     from .brave_search import BraveSearchFinder
                     finder = BraveSearchFinder()
                     # Brave free tier: 1 query/sec → sequenziale, niente thread
-                    for c in tqdm(still_missing, desc="Web search", unit="comune"):
+                    show_tqdm = sys.stderr.isatty()
+                    iterable = (
+                        tqdm(still_missing, desc="Web search", unit="comune")
+                        if show_tqdm
+                        else still_missing
+                    )
+                    for idx, c in enumerate(iterable, start=1):
                         site = site_by_istat.get(c.codice_istat, "")
                         from urllib.parse import urlparse
                         host = ""
@@ -311,7 +317,10 @@ def _run(region_code: str, region_name: str, args) -> int:
                             host = urlparse(u).netloc.lstrip("www.")
                         try:
                             result = finder.search_polizia_locale(
-                                c.nome, c.provincia, domain_hint=host
+                                c.nome,
+                                c.provincia,
+                                domain_hint=host,
+                                max_total_seconds=max(30.0, float(args.timeout) * 4.0),
                             )
                             # Brave ritorna (pec, mail, sources), WebSearchFinder (pec, mail)
                             pec, mail = result[:2]
@@ -319,6 +328,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                                 web_results[c.codice_istat] = (pec, mail)
                         except Exception:
                             continue
+                        if not show_tqdm and (idx % 5 == 0 or idx == len(still_missing)):
+                            print(f"      Web search: {idx}/{len(still_missing)} comuni")
                     finder.close()
                 else:
                     from .web_search import WebSearchFinder
