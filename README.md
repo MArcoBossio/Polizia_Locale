@@ -52,12 +52,14 @@ python run.py --list-regions
 
 ```text
 -o, --output DIR        Cartella di output (default: ./output)
---no-scrape             Usa solo IndicePA, niente scraping dei siti comunali
---no-comune-pec         Disabilita il fallback con la PEC del Comune (default: ATTIVO)
---no-expand-unioni      Disabilita l'espansione delle Unioni/Consorzi PL (default: ATTIVO)
+--no-scrape             Disabilita lo scraping dei siti comunali
+--no-expand-unioni      Disabilita l'espansione delle Unioni/Consorzi PL
 --workers N             Thread paralleli (default 8)
---scrape-limit N        Limita lo scraping ai primi N comuni mancanti (test)
---sleep SEC             Pausa tra richieste in modalità sequenziale (default 0.5)
+--scrape-limit N        Limita lo scraping ai primi N comuni mancanti
+--include-comune-pec    Includi la PEC istituzionale del Comune come
+                        fallback quando manca una PL-specifica (OFF di default)
+--no-strict             Disabilita il filtro strict (accetta anche le PEC
+                        generiche del Comune registrate come UO della PL)
 --timeout SEC           Timeout HTTP scraping (default 15)
 ```
 
@@ -70,36 +72,33 @@ Esempio dopo `git clone`:
 git clone <url-repo> polizia-locale-finder
 cd polizia-locale-finder
 pip install -r requirements-cli.txt
-python run.py Lombardia
+python run.py Toscana
 ls ./output/
-# polizia_locale_lombardia.csv
-# polizia_locale_lombardia.xlsx
-# polizia_locale_lombardia.json
+# polizia_locale_toscana.csv
+# polizia_locale_toscana.xlsx
+# polizia_locale_toscana.json
 ```
 
-Puoi cambiare percorso con `-o`:
-```bash
-python run.py Lombardia -o ~/Desktop/pec-pl
-```
+### Esempio reale Toscana (273 comuni, ~2 min, strict mode)
 
-### Esempio reale Toscana (273 comuni, ~30 sec)
+| Fonte                              | Comuni | Esempio mail/PEC |
+|------------------------------------|-------:|------------------|
+| `IndicePA` (PL diretta)            |     64 | `polizialocale@comune.grosseto.it`, `direz.pol.municipale@pec.comune.fi.it` |
+| `IndicePA-Unione` (PL associata)   |     36 | `polizialocale.unionevaldera@postacert.toscana.it` |
+| `ScrapingSitoComune` (sito comune) |     19 | `centraleoperativapm@comune.lucca.it` |
+| `NON TROVATO`                      |    155 | (no mail PL pubblica registrata) |
+| **Coverage strict**                | **118/273 (43 %)** | mail genuinamente PL-specifiche |
 
-| Fonte                                | Comuni |
-|--------------------------------------|-------:|
-| `IndicePA` (UO PL dedicata)          |    166 |
-| `IndicePA-Unione` (PL associata)     |     24 |
-| `IndicePA-Comune (fallback)`         |     92 |
-| **Copertura**                        | **273 / 273 (100 %)** |
+### Comportamento per i comuni "NON TROVATO"
 
-### Esempio reale Lombardia (1.502 comuni, ~2 min)
+Significa che la Polizia Locale di quel comune **non ha una casella mail
+pubblicamente esposta** né su IndicePA né sul sito istituzionale. Per quei
+comuni puoi:
 
-| Fonte                            | Comuni |
-|----------------------------------|-------:|
-| `IndicePA` (UO PL dedicata)      |    434 |
-| `IndicePA-AOO` (AOO PL)          |      6 |
-| `IndicePA-Unione` (PL associata) | varies |
-| `IndicePA-Comune (fallback)`     |  ~1.060 |
-| **Copertura tipica**             |  **99,9 %** |
+1. Rilanciare con `--include-comune-pec` per usare come fallback la PEC
+   istituzionale del Comune (es. `comune.X@postacert.regione.it`).
+2. Aprire la PEC istituzionale del Comune e nell'oggetto specificare
+   "Alla c.a. Polizia Locale" — è il canale legalmente valido.
 
 ## Output
 
@@ -167,4 +166,6 @@ Puoi sovrascrivere la cartella con la variabile d'ambiente
 I dataset di IndicePA sono open data pubblicati da AgID. Le PEC delle PA
 italiane sono pubbliche per legge. Lo scraping dei siti comunali utilizza
 contenuti pubblici e introduce una pausa tra le richieste; usalo
+responsabilmente.
+ieste; usalo
 responsabilmente.

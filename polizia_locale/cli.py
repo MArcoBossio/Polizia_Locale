@@ -56,11 +56,11 @@ def _run(region_code: str, region_name: str, args) -> int:
 
     print("[2/4] Scarico i dataset IndicePA (UO + AOO)...")
     istat_codes = [c.codice_istat for c in comuni]
-    found_uo = find_polizia_locale_uo(istat_codes)
-    found_aoo = find_polizia_locale_aoo(istat_codes)
+    found_uo = find_polizia_locale_uo(istat_codes, strict=args.strict)
+    found_aoo = find_polizia_locale_aoo(istat_codes, strict=args.strict)
     print(
         f"      {len(found_uo)} UO + {len(found_aoo)} AOO 'Polizia Locale/Municipale' "
-        f"trovate su IndicePA."
+        f"trovate su IndicePA (strict={args.strict})."
     )
 
     # indicizza per codice ISTAT — UO ha priorità, AOO aggiunto se nuovo comune
@@ -86,8 +86,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                 except Exception:
                     return u, []
                 matched = match_member_comuni(dedicated, comuni)
-                if not matched:
-                    matched = match_member_comuni(homepage, comuni)
+                # NIENTE fallback su homepage: troppo rumore (es. menzioni
+                # casuali di "Milano" su sito di una piccola Unione)
                 return u, matched
 
             print(
@@ -110,13 +110,20 @@ def _run(region_code: str, region_name: str, args) -> int:
             total_attrib = 0
             for u, matched in unioni_in_region:
                 # provincia della sede dell'Unione: i membri devono appartenere
-                # alla stessa provincia (le Unioni sono per legge sub-provinciali)
+                # alla stessa provincia (le Unioni sono per legge sub-provinciali).
+                # Inoltre escludiamo i capoluoghi di provincia: NON sono mai
+                # parte di Unioni (raro, e fonte di falsi positivi).
                 sigla_unione = sigla_by_istat.get(u.codice_comune_istat_sede, "")
+                # set dei capoluoghi (codice istat finiscono in '001' per i 6-char,
+                # ma è euristico; meglio: comune con nome uguale alla provincia)
                 for c in matched:
                     if c.codice_istat in by_istat:
                         continue  # ha già una PL diretta
                     if sigla_unione and c.sigla_provincia != sigla_unione:
-                        continue  # diversa provincia → falso positivo
+                        continue
+                    # esclusione capoluoghi di provincia (mai membri di Unioni)
+                    if c.nome.strip().lower() == c.provincia.strip().lower():
+                        continue
                     union_records_by_istat.setdefault(c.codice_istat, {
                         "comune": c.nome,
                         "codice_istat": c.codice_istat,
@@ -406,10 +413,21 @@ def _run(region_code: str, region_name: str, args) -> int:
     basename = f"polizia_locale_{region_slug}"
     paths = export_all(rows, args.output, basename)
     rows_with = [r for r in rows if r.get("pec") or r.get("email")]
+    n_not_found = sum(1 for r in rows if "NON TROVATO" in r.get("fonte", ""))
     print("\n=== RISULTATI ===")
-    print(f"  Comuni totali: {len(comuni)}")
-    print(f"  Comuni con PEC/Mail Polizia Locale: {len(set(r['codice_istat'] for r in rows_with))}")
-    print(f"  Record totali (PL/PM trovate): {len(rows_with)}")
+    print(f"  Comuni totali nella regione:           {len(comuni)}")
+    print(f"  Comuni con mail/PEC PL pubblica:       {len(set(r['codice_istat'] for r in rows_with))}")
+    print(f"  Comuni senza mail PL pubblica:         {n_not_found}")
+    print(f"  Record totali esportati:               {len(rows)}")
+    if n_not_found > 0 and not args.include_comune_pec:
+        print(
+            "\n  NOTA: lo script restituisce SOLO mail con local-part PL-specifica "
+            "(polizialocale@, vigili@, comandopm@, …).\n"
+            "  Per i comuni 'NON TROVATO' la Polizia Locale non ha una casella mail "
+            "pubblica e dedicata.\n"
+            "  Se vuoi includere come fallback la PEC istituzionale del Comune "
+            "(comune.X@postacert.regione.it), riesegui con `--include-comune-pec`."
+        )
     print("\nFile generati:")
     for k, v in paths.items():
         print(f"  - {k.upper():5s} {v}")
@@ -487,11 +505,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-comune-pec",
         dest="include_comune_pec",
         action="store_false",
-        help="Disabilita il fallback con la PEC istituzionale del Comune. "
-        "Per default, se la Polizia Locale non ha una mail/PEC dedicata, viene "
-        "restituita la PEC del Comune (marcata come 'PEC generica del Comune').",
+        help="(default) Non includere la PEC istituzionale del Comune come "
+        "fallback quando manca una mail/PEC PL-specifica.",
     )
-    p.set_defaults(include_comune_pec=True)
+    p.add_argument(
+        "--include-comune-pec",
+        dest="include_comune_pec",
+        action="store_true",
+        help="Includi la PEC istituzionale del Comune come fallback quando "
+        "manca una mail/PEC PL-specifica. Marcata come 'PEC generica del Comune'.",
+    )
+    p.set_defaults(include_comune_pec=False)
+    p.add_argument(
+        "--no-strict",
+        dest="strict",
+        action="store_false",
+        help="(opzionale) Disabilita il filtro 'solo mail PL-specifiche': "
+        "accetta qualunque mail registrata in IndicePA come UO della PL, "
+        "anche le PEC generiche del Comune.",
+    )
+    p.set_defaults(strict=True)
     return p
 
 

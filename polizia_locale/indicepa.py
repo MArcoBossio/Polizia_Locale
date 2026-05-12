@@ -133,13 +133,73 @@ def _load_aoo_df() -> pd.DataFrame:
     return df.fillna("")
 
 
-def _extract_mails(row: pd.Series) -> tuple[str, str]:
-    """Restituisce (pec, mail_ordinaria) dalle 5 coppie Mail/Tipo_Mail."""
+_PL_LOCAL_PARTS = (
+    "polizialocale",
+    "poliziamunicipale",
+    "polizia.locale",
+    "polizia.municipale",
+    "polizia-locale",
+    "polizia-municipale",
+    "polizia_locale",
+    "polizia_municipale",
+    "pol.locale",
+    "pol.municipale",
+    "vigili",
+    "vigiliurbani",
+    "vigili.urbani",
+    "vigili-urbani",
+    "comandopm",
+    "comandopl",
+    "comando.pm",
+    "comando.pl",
+    "comando-pm",
+    "comando-pl",
+    "comando.polizia",
+    "comando-polizia",
+    "comando_polizia",
+)
+
+
+def is_pl_specific_email(email: str) -> bool:
+    """True se la local-part dell'email indica una casella della Polizia Locale.
+
+    Accetta:
+      - polizialocale@…, poliziamunicipale@…, polizia.locale@…, polizia-municipale@…
+      - vigili@…, vigili.urbani@…, vigili-urbani@…, vigiliurbani@…
+      - comandopm@…, comandopl@…, comando.pm@…, comando-polizia@…
+      - pm.<comune>@…, pl.<comune>@…
+      - <prefix>pm@…, <prefix>pl@… (es. centraleoperativapm@…, ufficiopm@…)
+    Rifiuta:
+      - comune.X@postacert…, protocollo@…, segreteria@…, info@…, ecc.
+    """
+    if not email or "@" not in email:
+        return False
+    local = email.split("@", 1)[0].lower().strip()
+    if any(k in local for k in _PL_LOCAL_PARTS):
+        return True
+    # pattern pm.* / pl.*
+    if local.startswith(("pm.", "pl.", "pm_", "pl_", "pm-", "pl-")):
+        return True
+    # pattern *.pm / *_pm / *-pm / *pm  (alla fine, anche senza separatore)
+    if re.search(r"(?:^|[._\-]?)(?:pm|pl)$", local):
+        return True
+    return False
+
+
+def _extract_mails(row: pd.Series, only_pl_specific: bool = False) -> tuple[str, str]:
+    """Restituisce (pec, mail_ordinaria) dalle 5 coppie Mail/Tipo_Mail.
+
+    Se `only_pl_specific=True` tiene solo mail con local-part PL-specifica
+    (polizialocale@, vigili@, comandopm@, …). Le PEC generiche del Comune
+    (es. comune.X@postacert.regione.it) vengono scartate.
+    """
     pec, ordinaria = [], []
     for i in range(1, 6):
         mail = str(row.get(f"Mail{i}", "")).strip()
         tipo = str(row.get(f"Tipo_Mail{i}", "")).strip().lower()
         if not mail or "@" not in mail:
+            continue
+        if only_pl_specific and not is_pl_specific_email(mail):
             continue
         if tipo == "pec":
             pec.append(mail)
@@ -151,8 +211,15 @@ def _extract_mails(row: pd.Series) -> tuple[str, str]:
     )
 
 
-def find_polizia_locale_uo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
-    """Filtra le UO di IndicePA che sono Polizia Locale/Municipale per i comuni dati."""
+def find_polizia_locale_uo(
+    istat_codes: list[str], strict: bool = True
+) -> list[PoliziaLocaleRecord]:
+    """Filtra le UO di IndicePA che sono Polizia Locale/Municipale per i comuni dati.
+
+    Se `strict=True` (default), tiene solo le UO che hanno almeno una mail/PEC
+    con local-part PL-specifica (polizialocale@, vigili@, comandopm@, ecc.);
+    le UO che hanno solo la PEC generica del Comune vengono scartate.
+    """
     df = _load_uo_df()
     target = {c.zfill(6) for c in istat_codes if c}
     if "Codice_comune_ISTAT" not in df.columns:
@@ -166,7 +233,9 @@ def find_polizia_locale_uo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
 
     out: list[PoliziaLocaleRecord] = []
     for _, row in df.iterrows():
-        pec, mail = _extract_mails(row)
+        pec, mail = _extract_mails(row, only_pl_specific=strict)
+        if strict and not pec and not mail:
+            continue  # in strict scarto le UO che hanno solo mail generiche
         out.append(
             PoliziaLocaleRecord(
                 codice_istat=row["_istat"],
@@ -186,12 +255,10 @@ def find_polizia_locale_uo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
     return out
 
 
-def find_polizia_locale_aoo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]:
-    """Filtra le AOO di IndicePA che sono Polizia Locale/Municipale per i comuni dati.
-
-    Alcuni comuni registrano la Polizia Locale come AOO (registro di protocollo)
-    invece che come UO; per questi è la fonte primaria della PEC.
-    """
+def find_polizia_locale_aoo(
+    istat_codes: list[str], strict: bool = True
+) -> list[PoliziaLocaleRecord]:
+    """Filtra le AOO di IndicePA che sono Polizia Locale/Municipale per i comuni dati."""
     try:
         df = _load_aoo_df()
     except Exception:
@@ -205,7 +272,7 @@ def find_polizia_locale_aoo(istat_codes: list[str]) -> list[PoliziaLocaleRecord]
 
     out: list[PoliziaLocaleRecord] = []
     for _, row in df.iterrows():
-        pec, mail = _extract_mails(row)
+        pec, mail = _extract_mails(row, only_pl_specific=strict)
         if not pec and not mail:
             continue
         out.append(

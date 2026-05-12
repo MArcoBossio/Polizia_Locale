@@ -265,14 +265,24 @@ def scrape_polizia_locale(
     timeout: int = 15,
     total_budget: float = 25.0,
     max_candidates: int = 4,
+    strict_pl_local: bool = True,
 ) -> ScrapeResult | None:
     """Cerca PEC/email della Polizia Locale sul sito comunale.
 
-    `timeout` è il timeout (connect, read) di ogni singola request; `total_budget`
-    è il tempo massimo totale dedicato a questo comune (tutte le pagine).
+    Se `strict_pl_local=True` (default), accetta SOLO mail con local-part
+    PL-specifica (polizialocale@, vigili@, comandopm@, …). Niente PEC/mail
+    generiche del Comune.
+
+    Strategia di ricerca (in ordine):
+      1. Visita i path noti come /polizia-locale, /polizia-municipale, …
+      2. Prova sottodomini dedicati: pm.X, pl.X, polizia.X, polizialocale.X,
+         poliziamunicipale.X, vigili.X.
+      3. Apre la homepage e segue i candidate links.
+    Si ferma appena trova mail PL-specifiche.
     """
+    from .indicepa import is_pl_specific_email
+
     deadline = time.monotonic() + total_budget
-    # split timeout: connect più aggressivo del read
     req_timeout = (min(timeout, 8), timeout)
     session = _new_session()
     site = site_hint.strip() or find_comune_website(session, comune, provincia)
@@ -283,32 +293,94 @@ def scrape_polizia_locale(
         site = "https://" + site
         parsed = urlparse(site)
     base = f"{parsed.scheme}://{parsed.netloc}"
+    host = parsed.netloc.lstrip("www.")
 
     pages_visited: list[str] = []
     pec_all: set[str] = set()
     mail_all: set[str] = set()
-    try:
-        r = session.get(site, timeout=req_timeout)
-        pages_visited.append(r.url)
-        soup = BeautifulSoup(r.text, "html.parser")
-        pec, mail = _filter_polizia_emails(_extract_emails_with_context(r.text))
-        pec_all |= pec
-        mail_all |= mail
 
-        candidates = _candidate_links(soup, base)[:max_candidates]
-        for url in candidates:
-            if time.monotonic() > deadline:
+    def _harvest(html: str, url_is_pl: bool):
+        if strict_pl_local:
+            for m in EMAIL_RE.finditer(html):
+                e = m.group(0)
+                if is_pl_specific_email(e):
+                    if _is_pec(e, html[max(0, m.start()-80):m.end()+80]):
+                        pec_all.add(e)
+                    else:
+                        mail_all.add(e)
+        else:
+            pairs = _extract_emails_with_context(html)
+            p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
+            pec_all.update(p)
+            mail_all.update(ml)
+
+    try:
+        # 1) Path diretti
+        for path in _DIRECT_PATH_HINTS:
+            if time.monotonic() > deadline or (pec_all or mail_all):
                 break
+            url = base + path
             try:
-                rr = session.get(url, timeout=req_timeout)
+                rr = session.get(url, timeout=req_timeout, allow_redirects=True)
+                if rr.status_code != 200:
+                    continue
                 pages_visited.append(rr.url)
-                pec, mail = _filter_polizia_emails(_extract_emails_with_context(rr.text))
-                pec_all |= pec
-                mail_all |= mail
-                if pec_all or mail_all:
-                    break
+                _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url))
             except Exception:
                 continue
+
+        # 2) Sottodomini dedicati (pm.X, pl.X, polizia.X)
+        if not (pec_all or mail_all):
+            # timeout aggressivo per sottodomini (spesso DNS non risponde)
+            sub_timeout = (3, 5)
+            for sub in ("pm", "pl", "polizia"):
+                if time.monotonic() > deadline or (pec_all or mail_all):
+                    break
+                sub_url = f"{parsed.scheme}://{sub}.{host}/"
+                try:
+                    rr = session.get(sub_url, timeout=sub_timeout, allow_redirects=True)
+                    if rr.status_code != 200:
+                        continue
+                    pages_visited.append(rr.url)
+                    _harvest(rr.text, url_is_pl=True)
+                    # esplora qualche link interno
+                    if not (pec_all or mail_all):
+                        soup = BeautifulSoup(rr.text, "html.parser")
+                        for a in soup.find_all("a", href=True)[:20]:
+                            t = (a.get_text() or "").lower()
+                            if any(k in t or k in a["href"].lower() for k in ["contatt", "sedi"]):
+                                u = urljoin(rr.url, a["href"])
+                                if u.startswith("http"):
+                                    try:
+                                        rr2 = session.get(u, timeout=sub_timeout)
+                                        pages_visited.append(rr2.url)
+                                        _harvest(rr2.text, url_is_pl=True)
+                                        if pec_all or mail_all:
+                                            break
+                                    except Exception:
+                                        continue
+                except Exception:
+                    continue
+
+        # 3) Homepage + candidate links
+        if not (pec_all or mail_all):
+            r = session.get(site, timeout=req_timeout)
+            pages_visited.append(r.url)
+            soup = BeautifulSoup(r.text, "html.parser")
+            _harvest(r.text, url_is_pl=False)
+
+            candidates = _candidate_links(soup, base)[:max_candidates]
+            for url in candidates:
+                if time.monotonic() > deadline:
+                    break
+                try:
+                    rr = session.get(url, timeout=req_timeout)
+                    pages_visited.append(rr.url)
+                    _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url))
+                    if pec_all or mail_all:
+                        break
+                except Exception:
+                    continue
     except Exception:
         if not (pec_all or mail_all):
             return None

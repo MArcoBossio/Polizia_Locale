@@ -47,6 +47,7 @@ class UnionePLRecord:
     indirizzo: str
     cap: str
     sito: str
+    codice_comune_istat_sede: str = ""
     fonte: str = "IndicePA-Unione"
 
 
