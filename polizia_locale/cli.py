@@ -447,14 +447,14 @@ def _run(region_code: str, region_name: str, args) -> int:
                                 u = site if site.startswith("http") else "https://" + site
                                 host = urlparse(u).netloc.lstrip("www.")
 
-                                pec, mail, _source = pm_finder.search_polizia_locale(
-                                    c_pm.nome, c_pm.provincia, strict_pl_local=args.strict
-                                )
-                                # registra il link alla scheda PM anche se non ci sono email,
-                                # così possiamo aprirla per ispezione manuale quando il
-                                # risultato finale è "NON TROVATO".
-                                if _source:
-                                    pm_links[c_pm.codice_istat] = _source
+                            pec, mail, _source = pm_finder.search_polizia_locale(
+                                c_pm.nome, c_pm.provincia, strict_pl_local=args.strict
+                            )
+                            # registra il link alla scheda PM anche se non ci sono email,
+                            # così possiamo aprirla per ispezione manuale quando il
+                            # risultato finale è "NON TROVATO".
+                            if _source:
+                                pm_links[c_pm.codice_istat] = _source
                             # Se non troviamo caselle PL-specifiche, proviamo un fallback
                             # che prende la mail presente su poliziamunicipale.it/comune/
                             # (ma esclude reparti non rilevanti come anagrafe/ragioneria).
