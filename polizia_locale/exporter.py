@@ -9,6 +9,8 @@ import pandas as pd
 
 FIELDS = [
     "comune",
+    "unione",
+    "comuni_associati",
     "provincia",
     "sigla_provincia",
     "mail",
@@ -22,6 +24,8 @@ def _normalize_rows(rows: list[dict]) -> list[dict]:
         out.append(
             {
                 "comune": r.get("comune", ""),
+                "unione": r.get("unione", ""),
+                "comuni_associati": r.get("comuni_associati", ""),
                 "provincia": r.get("provincia", ""),
                 "sigla_provincia": r.get("sigla_provincia", r.get("sigla", "")),
                 "mail": r.get("email", r.get("mail", "")),

@@ -144,6 +144,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                         continue
                     union_records_by_istat.setdefault(c.codice_istat, {
                         "comune": c.nome,
+                        "unione": u.denominazione_ente,
                         "codice_istat": c.codice_istat,
                         "provincia": c.provincia,
                         "sigla_provincia": c.sigla_provincia,
@@ -659,6 +660,63 @@ def _run(region_code: str, region_name: str, args) -> int:
             print(
                 f"[4/4] Saltato scraping (disabilitato). {len(missing)} comuni senza UO PL dedicata."
             )
+
+    def _group_shared_contacts(input_rows: list[dict]) -> list[dict]:
+        grouped: dict[tuple[str, str], dict] = {}
+        order: list[tuple[str, str]] = []
+        passthrough: list[dict] = []
+
+        for row in input_rows:
+            pec = (row.get("pec") or "").strip()
+            mail = (row.get("email") or "").strip()
+            if not pec and not mail:
+                passthrough.append(row)
+                continue
+
+            key = (pec, mail)
+            current = grouped.get(key)
+            if current is None:
+                current = dict(row)
+                current["comuni_associati"] = [row.get("comune", "")]
+                current["unioni_associate"] = [row.get("unione", "")]
+                current["fonte_origine"] = [row.get("fonte", "")]
+                grouped[key] = current
+                order.append(key)
+            else:
+                current.setdefault("comuni_associati", []).append(row.get("comune", ""))
+                current.setdefault("unioni_associate", []).append(row.get("unione", ""))
+                current.setdefault("fonte_origine", []).append(row.get("fonte", ""))
+
+        output_rows: list[dict] = passthrough[:]
+        for key in order:
+            row = grouped[key]
+            comuni_associati: list[str] = []
+            for c in row.get("comuni_associati", []):
+                c = (c or "").strip()
+                if c and c not in comuni_associati:
+                    comuni_associati.append(c)
+
+            unioni_associate: list[str] = []
+            for u in row.get("unioni_associate", []):
+                u = (u or "").strip()
+                if u and u not in unioni_associate:
+                    unioni_associate.append(u)
+
+            fonti_origine: list[str] = []
+            for f in row.get("fonte_origine", []):
+                f = (f or "").strip()
+                if f and f not in fonti_origine:
+                    fonti_origine.append(f)
+
+            row["comune"] = comuni_associati[0] if comuni_associati else row.get("comune", "")
+            row["comuni_associati"] = " | ".join(comuni_associati)
+            row["unione"] = " | ".join(unioni_associate)
+            row["fonte"] = " + ".join(fonti_origine)
+            output_rows.append(row)
+
+        return output_rows
+
+    rows = _group_shared_contacts(rows)
 
     # esportazione
     region_slug = (

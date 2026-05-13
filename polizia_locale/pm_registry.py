@@ -28,6 +28,8 @@ class PoliziaMunicipaleFinder:
         self.timeout = timeout
         self._sess = requests.Session()
         self._sess.headers["User-Agent"] = "Mozilla/5.0 (compatible; PoliziaLocaleBot/1.0)"
+        self._letter_cache: dict[str, str] = {}
+        self._detail_cache: dict[tuple[str, str], str] = {}
 
     def close(self) -> None:
         try:
@@ -44,11 +46,23 @@ class PoliziaMunicipaleFinder:
         except Exception:
             return ""
 
+    def _fetch_letter_index(self, letter: str) -> str:
+        if letter in self._letter_cache:
+            return self._letter_cache[letter]
+        html = self._fetch(f"{BASE_URL}/comuni?f={letter}")
+        if html:
+            self._letter_cache[letter] = html
+        return html
+
     def _find_detail_url(self, comune: str, provincia: str) -> str:
         letter = (comune.strip()[:1] or "").upper()
         if not letter.isalpha():
             letter = "A"
-        html = self._fetch(f"{BASE_URL}/comuni?f={letter}")
+        cache_key = (comune.strip().lower(), provincia.strip().lower())
+        if cache_key in self._detail_cache:
+            return self._detail_cache[cache_key]
+
+        html = self._fetch_letter_index(letter)
         if not html:
             return ""
 
@@ -78,7 +92,9 @@ class PoliziaMunicipaleFinder:
             if target_prov and target_prov not in prov and prov not in target_prov:
                 continue
 
-            return urljoin(BASE_URL, a["href"])
+            detail_url = urljoin(BASE_URL, a["href"])
+            self._detail_cache[cache_key] = detail_url
+            return detail_url
 
         return ""
 
