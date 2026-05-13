@@ -83,9 +83,18 @@ class PoliziaMunicipaleFinder:
         return ""
 
     def search_polizia_locale(
-        self, comune: str, provincia: str = "", strict_pl_local: bool = True
+        self,
+        comune: str,
+        provincia: str = "",
+        strict_pl_local: bool = True,
+        allow_non_pl_fallback: bool = False,
     ) -> tuple[set[str], set[str], str]:
-        """Ritorna (pec_set, mail_set, source_url)."""
+        """Ritorna (pec_set, mail_set, source_url).
+
+        If `allow_non_pl_fallback` is True, non-PL-specific emails found on the
+        poliziamunicipale.it scheda will be accepted as fallback unless their
+        surrounding context indicates unrelated departments (anagrafe, ragioneria, etc.).
+        """
         detail_url = self._find_detail_url(comune, provincia)
         if not detail_url:
             return set(), set(), ""
@@ -100,16 +109,36 @@ class PoliziaMunicipaleFinder:
         # estrazione da testo pagina e mailto
         text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
         haystack = "\n".join([html, text])
+        UNWANTED = (
+            "anagrafe",
+            "ragioner",
+            "ragioneria",
+            "tribut",
+            "protocollo",
+            "segreteria",
+            "personale",
+            "econom",
+            "finanzi",
+        )
+
         for m in EMAIL_RE.finditer(haystack):
             email = m.group(0)
-            if strict_pl_local and not is_pl_specific_email(email):
+            is_pl = is_pl_specific_email(email)
+            if strict_pl_local and not is_pl:
                 continue
             # scarta indirizzi personali/di provider gratuiti se non PL-specifici
-            if is_likely_personal_email(email) and not is_pl_specific_email(email):
+            if is_likely_personal_email(email) and not is_pl:
                 continue
             start = max(0, m.start() - 80)
             end = min(len(haystack), m.end() + 80)
-            ctx = haystack[start:end]
+            ctx = haystack[start:end].lower()
+
+            # fallback permissivo: accetta mail non-PL se non provengono da uffici
+            # chiaramente non rilevanti (anagrafe, ragioneria, tributi, ecc.).
+            if not is_pl and allow_non_pl_fallback:
+                if any(k in ctx for k in UNWANTED):
+                    continue
+
             if _is_pec(email, ctx):
                 pec.add(email)
             else:

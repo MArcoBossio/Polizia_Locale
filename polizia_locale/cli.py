@@ -20,6 +20,7 @@ from .unioni import (
     find_unioni_with_polizia_locale,
     match_member_comuni,
 )
+import webbrowser
 
 
 def _load_env() -> None:
@@ -183,6 +184,7 @@ def _run(region_code: str, region_name: str, args) -> int:
 
     rows: list[dict] = []
     missing: list = []
+    pm_links: dict[str, str] = {}
 
     def _enrich_with_comune_pec(d: dict, c) -> dict:
         """Se il record IndicePA non ha PEC, aggiunge la PEC istituzionale del Comune
@@ -445,9 +447,27 @@ def _run(region_code: str, region_name: str, args) -> int:
                                 u = site if site.startswith("http") else "https://" + site
                                 host = urlparse(u).netloc.lstrip("www.")
 
-                            pec, mail, _source = pm_finder.search_polizia_locale(
-                                c_pm.nome, c_pm.provincia, strict_pl_local=args.strict
-                            )
+                                pec, mail, _source = pm_finder.search_polizia_locale(
+                                    c_pm.nome, c_pm.provincia, strict_pl_local=args.strict
+                                )
+                                # registra il link alla scheda PM anche se non ci sono email,
+                                # così possiamo aprirla per ispezione manuale quando il
+                                # risultato finale è "NON TROVATO".
+                                if _source:
+                                    pm_links[c_pm.codice_istat] = _source
+                            # Se non troviamo caselle PL-specifiche, proviamo un fallback
+                            # che prende la mail presente su poliziamunicipale.it/comune/
+                            # (ma esclude reparti non rilevanti come anagrafe/ragioneria).
+                            if (not pec and not mail) and _source:
+                                try:
+                                    pec_fb, mail_fb, _ = pm_finder.search_polizia_locale(
+                                        c_pm.nome, c_pm.provincia, strict_pl_local=False, allow_non_pl_fallback=True
+                                    )
+                                    if pec_fb or mail_fb:
+                                        pec |= pec_fb
+                                        mail |= mail_fb
+                                except Exception:
+                                    pass
                             if host:
                                 pec = {e for e in pec if _domain_ok(e, host)}
                                 mail = {e for e in mail if _domain_ok(e, host)}
@@ -455,7 +475,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                             pec, mail = _accept_verified_web_result(c_pm, pec, mail)
 
                             if pec or mail:
-                                web_results[c_pm.codice_istat] = (pec, mail)
+                                # salva anche la fonte (scheda PM) per permettere un click rapido
+                                web_results[c_pm.codice_istat] = (pec, mail, _source)
 
                             if not show_tqdm_pm and (idx % 5 == 0 or idx == len(remaining)):
                                 print(f"      PM source: {idx}/{len(remaining)}")
@@ -669,10 +690,46 @@ def _run(region_code: str, region_name: str, args) -> int:
     print("\nFile generati:")
     for k, v in paths.items():
         print(f"  - {k.upper():5s} {v}")
+
+    # Apri automaticamente i link poliziamunicipale.it SOLO per i comuni marcati
+    # come "NON TROVATO" (opzionale).
+    if getattr(args, "open_links", False):
+        links: list[str] = []
+        for r in rows:
+            fonte = (r.get("fonte") or "").upper()
+            if "NON TROVATO" not in fonte:
+                continue
+            codice = r.get("codice_istat", "")
+            # preferiamo il link raccolto da PoliziaMunicipaleFinder se presente
+            u = pm_links.get(codice, "")
+            if not u:
+                sito = (r.get("sito") or "").strip()
+                if sito and "poliziamunicipale.it" in sito:
+                    u = sito
+            if u:
+                if not u.startswith("http"):
+                    u = "https://" + u
+                if u not in links:
+                    links.append(u)
+        if links:
+            print(f"\nApro {min(len(links), 20)} pagine poliziamunicipale.it per i comuni NON TROVATO in browser...")
+            for u in links[:20]:
+                try:
+                    webbrowser.open_new_tab(u)
+                except Exception:
+                    print(f"Impossibile aprire: {u}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
+    def _default_workers() -> int:
+        try:
+            cnt = os.cpu_count() or 1
+        except Exception:
+            cnt = 1
+        # Imposta a 16 o al numero di CPU disponibili se minore
+        return min(16, max(1, int(cnt)))
+
     p = argparse.ArgumentParser(
         prog="polizia-locale-finder",
         description=(
@@ -728,8 +785,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--workers",
         type=int,
-        default=8,
-        help="Numero di thread paralleli per lo scraping (default: 8, 1 = sequenziale)",
+        default=_default_workers(),
+        help="Numero di thread paralleli per lo scraping (default: 16 o numero CPU se minore, 1 = sequenziale)",
     )
     p.add_argument(
         "--extra-query",
@@ -783,6 +840,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disabilita la fonte aggiuntiva poliziamunicipale.it/comuni per i comuni senza risultati.",
     )
     p.set_defaults(pm_source=True)
+    p.add_argument(
+        "--open-links",
+        dest="open_links",
+        action="store_true",
+        help="Dopo l'esecuzione apre le pagine sorgente trovate su poliziamunicipale.it (apre fino a 20 tab).",
+    )
     p.add_argument(
         "--no-reliability-check",
         dest="reliability_check",
