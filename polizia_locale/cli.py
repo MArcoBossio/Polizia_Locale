@@ -516,9 +516,11 @@ def _run(region_code: str, region_name: str, args) -> int:
                     }
                 )
                 continue
-            # Fallback PEC del comune (opt-in)
+            # Fallback automatico dopo scraping/web: usa mail/PEC istituzionale del Comune.
+            # Manteniamo comunque il flag --include-comune-pec per attivarlo anche
+            # quando lo scraping e' disabilitato.
             info = pec_comune_by_istat.get(c.codice_istat)
-            if args.include_comune_pec and info and (info.get("pec_comune") or info.get("mail_comune")):
+            if info and (info.get("pec_comune") or info.get("mail_comune")):
                 rows.append(
                     {
                         "comune": c.nome,
@@ -533,7 +535,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "indirizzo": info.get("indirizzo", ""),
                         "cap": info.get("cap", ""),
                         "sito": info.get("sito", ""),
-                        "fonte": "IndicePA-Comune (fallback)",
+                        "fonte": "IndicePA-Comune (fallback auto post-scraping)",
                     }
                 )
             else:
@@ -770,9 +772,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(web_search=True)
     p.add_argument(
         "--pm-source",
+        dest="pm_source",
         action="store_true",
-        help="Usa anche poliziamunicipale.it/comuni come fonte aggiuntiva per i comuni senza risultati.",
+        help="Usa anche poliziamunicipale.it/comuni come fonte aggiuntiva per i comuni senza risultati (default: attivo).",
     )
+    p.add_argument(
+        "--no-pm-source",
+        dest="pm_source",
+        action="store_false",
+        help="Disabilita la fonte aggiuntiva poliziamunicipale.it/comuni per i comuni senza risultati.",
+    )
+    p.set_defaults(pm_source=True)
     p.add_argument(
         "--no-reliability-check",
         dest="reliability_check",
