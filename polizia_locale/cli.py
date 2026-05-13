@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from .comuni import load_comuni
 from .exporter import export_all
-from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index
+from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index, is_pl_specific_email
 from .regions import list_regions, resolve_region
 from .scraper import scrape_polizia_locale
 from .unioni import (
@@ -662,6 +662,20 @@ def _run(region_code: str, region_name: str, args) -> int:
             )
 
     def _group_shared_contacts(input_rows: list[dict]) -> list[dict]:
+        GENERIC_LOCAL_PARTS = (
+            "info",
+            "segreteria",
+            "protocollo",
+            "ufficio",
+            "amministrazione",
+            "contatti",
+            "contact",
+            "help",
+            "service",
+            "webmaster",
+            "noreply",
+            "postmaster",
+        )
         grouped: dict[tuple[str, str], dict] = {}
         order: list[tuple[str, str]] = []
         passthrough: list[dict] = []
@@ -669,6 +683,20 @@ def _run(region_code: str, region_name: str, args) -> int:
         for row in input_rows:
             pec = (row.get("pec") or "").strip()
             mail = (row.get("email") or "").strip()
+            # rimuovi indirizzi con local-part generiche se non sono PL-specifiche
+            if mail:
+                parts = [p.strip() for p in mail.replace(";", "|").split("|") if p.strip()]
+                kept: list[str] = []
+                for e in parts:
+                    if is_pl_specific_email(e):
+                        kept.append(e)
+                        continue
+                    local = e.split("@", 1)[0].lower() if "@" in e else e.lower()
+                    if any(local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-") for g in GENERIC_LOCAL_PARTS):
+                        # scarta generic local-part
+                        continue
+                    kept.append(e)
+                mail = " | ".join(sorted(set(kept)))
             if not pec and not mail:
                 passthrough.append(row)
                 continue

@@ -137,6 +137,21 @@ class PoliziaMunicipaleFinder:
             "finanzi",
         )
 
+        GENERIC_LOCAL_PARTS = (
+            "info",
+            "segreteria",
+            "protocollo",
+            "ufficio",
+            "amministrazione",
+            "contatti",
+            "contact",
+            "help",
+            "service",
+            "webmaster",
+            "noreply",
+            "postmaster",
+        )
+
         for m in EMAIL_RE.finditer(haystack):
             email = m.group(0)
             is_pl = is_pl_specific_email(email)
@@ -151,8 +166,24 @@ class PoliziaMunicipaleFinder:
 
             # fallback permissivo: accetta mail non-PL se non provengono da uffici
             # chiaramente non rilevanti (anagrafe, ragioneria, tributi, ecc.).
+            # Scartiamo inoltre local-part generiche come 'info@', 'segreteria@',
+            # ecc. a meno che il contesto non indichi esplicitamente la PL.
+            local = email.split("@", 1)[0].lower()
             if not is_pl and allow_non_pl_fallback:
                 if any(k in ctx for k in UNWANTED):
+                    continue
+                # scarta local-part generiche
+                for g in GENERIC_LOCAL_PARTS:
+                    if local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-"):
+                        # se il contesto contiene parole chiave PL, potremmo accettare,
+                        # altrimenti scartiamo
+                        if not any(pk in ctx for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                            break
+                else:
+                    # no generic local-part matched -> accept
+                    pass
+                # if break hit (generic local part and no PL context), skip
+                if any(local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-") for g in GENERIC_LOCAL_PARTS) and not any(pk in ctx for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
                     continue
 
             if _is_pec(email, ctx):

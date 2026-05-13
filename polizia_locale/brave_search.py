@@ -30,6 +30,22 @@ from .scraper import EMAIL_RE, _is_pec
 from .utils import is_likely_personal_email
 
 
+GENERIC_LOCAL_PARTS = (
+    "info",
+    "segreteria",
+    "protocollo",
+    "ufficio",
+    "amministrazione",
+    "contatti",
+    "contact",
+    "help",
+    "service",
+    "webmaster",
+    "noreply",
+    "postmaster",
+)
+
+
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
@@ -84,6 +100,14 @@ def _harvest_emails(text: str, _domain_ok, only_pl_specific: bool = True) -> tup
         # scarta indirizzi personali/di provider gratuiti se non PL-specifici
         if is_likely_personal_email(email) and not is_pl_specific_email(email):
             continue
+        # se non siamo in modalità strictly PL, scartiamo local-part generiche
+        local = email.split("@", 1)[0].lower()
+        if not only_pl_specific and not is_pl_specific_email(email):
+            # se la local-part e' generica e il contesto non contiene parole PL,
+            # scartiamo l'indirizzo
+            if any(local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-") for g in GENERIC_LOCAL_PARTS):
+                if not any(pk in text.lower() for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                    continue
         if not _domain_ok(email):
             continue
         start = max(0, m.start() - 80)
@@ -165,12 +189,79 @@ class BraveSearchFinder:
                         from io import BytesIO
                         from pypdf import PdfReader
                         reader = PdfReader(BytesIO(r.content))
-                        return " ".join(p.extract_text() or "" for p in reader.pages[:30])
+                        text = " ".join(p.extract_text() or "" for p in reader.pages[:30])
+                        # if PDF text is empty, try OCR if available
+                        if not text.strip():
+                            try:
+                                from PIL import Image
+                                import pytesseract
+                                try:
+                                    from pdf2image import convert_from_bytes
+                                except Exception:
+                                    convert_from_bytes = None
+                                if convert_from_bytes:
+                                    pages = convert_from_bytes(r.content, first_page=1, last_page=3)
+                                    ocr_texts = []
+                                    for im in pages:
+                                        try:
+                                            ocr_texts.append(pytesseract.image_to_string(im, lang='ita'))
+                                        except Exception:
+                                            pass
+                                    text = text + " " + " ".join(ocr_texts)
+                            except Exception:
+                                pass
+                        return text
                     except Exception:
                         return ""
                 # HTML
                 soup = BeautifulSoup(r.text, "html.parser")
-                return soup.get_text(" ", strip=True)
+                page_text = soup.get_text(" ", strip=True)
+                # OCR images found in page (if pytesseract available)
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    images = []
+                    for img in soup.find_all("img"):
+                        src = img.get("src")
+                        if not src:
+                            continue
+                        if src.startswith("data:"):
+                            # base64 embedded image
+                            try:
+                                import base64
+                                header, b64 = src.split(",", 1)
+                                data = base64.b64decode(b64)
+                                from io import BytesIO
+                                im = Image.open(BytesIO(data)).convert("RGB")
+                                images.append(im)
+                            except Exception:
+                                continue
+                        else:
+                            # relative -> absolute
+                            from urllib.parse import urljoin
+
+                            img_url = urljoin(url, src)
+                            try:
+                                ir = self._page_sess.get(img_url, timeout=6)
+                                if ir.status_code != 200:
+                                    continue
+                                from io import BytesIO
+
+                                im = Image.open(BytesIO(ir.content)).convert("RGB")
+                                images.append(im)
+                            except Exception:
+                                continue
+                    ocr_texts = []
+                    for im in images[:3]:
+                        try:
+                            ocr_texts.append(pytesseract.image_to_string(im, lang='ita'))
+                        except Exception:
+                            continue
+                    if ocr_texts:
+                        page_text = page_text + " " + " ".join(ocr_texts)
+                except Exception:
+                    pass
+                return page_text
             except Exception:
                 time.sleep(backoff)
                 backoff *= 2

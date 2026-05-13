@@ -33,6 +33,36 @@ pip install -r requirements-cli.txt
 playwright install chromium       # solo se userai il backend Bing+Playwright
 ```
 
+### OCR opzionale
+
+Se vuoi abilitare anche il recupero email da immagini e PDF scansionati, servono
+alcuni prerequisiti in piu':
+
+1. Pacchetti Python gia' inclusi in `requirements-cli.txt`:
+   - `pillow`
+   - `pytesseract`
+   - `pdf2image`
+2. Binario di sistema di Tesseract OCR.
+3. Su Windows, Poppler se vuoi l'OCR dei PDF tramite `pdf2image`.
+
+Su Windows puoi installare Tesseract e Poppler con il gestore che preferisci
+(ad esempio Chocolatey, Scoop o installazione manuale) e poi verificare che i
+relativi eseguibili siano nel `PATH`.
+
+Se Tesseract o Poppler non sono presenti, lo script continua comunque a
+funzionare: semplicemente l'OCR su immagini/PDF verra' saltato.
+
+### Debug rapido: Aosta
+
+Se vuoi verificare il caso di `polizia-municipale@comune.aosta.it`, lancia:
+
+```bash
+.venv\Scripts\python.exe run.py 02 --scrape-limit 1 --no-reliability-check --no-strict --no-web-search --workers 1 -o ./debug_aosta
+```
+
+Se vuoi includere anche la ricerca web e l'OCR, togli `--no-web-search` e
+lascia attivo il supporto OCR con le dipendenze installate.
+
 ### Configurazione (opzionale ma raccomandata)
 
 Crea un file `.env` nella root del progetto:

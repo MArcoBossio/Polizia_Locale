@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -200,6 +201,37 @@ def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
     return out
 
 
+def _ocr_page_screenshot(url: str, timeout_ms: int = 15000) -> str:
+    """Rende la pagina con Playwright e prova OCR sullo screenshot.
+
+    Utile quando il testo della mail e' presente solo in immagini, canvas o
+    contenuto renderizzato via JavaScript.
+    """
+    try:
+        from PIL import Image
+        import pytesseract
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=USER_AGENT,
+                locale="it-IT",
+                viewport={"width": 1440, "height": 2200},
+            )
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_timeout(1000)
+            img = page.screenshot(full_page=True)
+            browser.close()
+        screenshot = Image.open(BytesIO(img)).convert("RGB")
+        return pytesseract.image_to_string(screenshot, lang="ita")
+    except Exception:
+        return ""
+
+
 def _filter_polizia_emails(
     pairs: list[tuple[str, str]],
     page_is_polizia: bool = False,
@@ -380,7 +412,8 @@ def scrape_polizia_locale(
             or host.endswith("." + domain)
         )
 
-    def _harvest(html: str, url_is_pl: bool):
+    def _harvest(html: str, url_is_pl: bool, page_url: str = ""):
+        found_before = bool(pec_all or mail_all)
         if strict_pl_local:
             for m in EMAIL_RE.finditer(html):
                 e = m.group(0)
@@ -395,6 +428,27 @@ def scrape_polizia_locale(
             pec_all.update(p)
             mail_all.update(ml)
 
+        # OCR fallback: se la pagina sembra rilevante ma non abbiamo trovato mail,
+        # rendiamo lo screenshot e cerchiamo testo in immagini / rendering JS.
+        if (not found_before) and not (pec_all or mail_all) and page_url:
+            html_l = html.lower()
+            if url_is_pl or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
+                ocr_text = _ocr_page_screenshot(page_url)
+                if ocr_text:
+                    if strict_pl_local:
+                        for m in EMAIL_RE.finditer(ocr_text):
+                            e = m.group(0)
+                            if is_pl_specific_email(e) or _email_on_official_domain(e):
+                                if _is_pec(e, ocr_text[max(0, m.start()-80):m.end()+80]):
+                                    pec_all.add(e)
+                                else:
+                                    mail_all.add(e)
+                    else:
+                        pairs = _extract_emails_with_context(ocr_text)
+                        p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
+                        pec_all.update(p)
+                        mail_all.update(ml)
+
     try:
         # 1) Path diretti
         for path in _DIRECT_PATH_HINTS:
@@ -406,7 +460,7 @@ def scrape_polizia_locale(
                 if rr.status_code != 200:
                     continue
                 pages_visited.append(rr.url)
-                _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url))
+                _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url), page_url=rr.url)
             except Exception:
                 continue
 
@@ -465,7 +519,7 @@ def scrape_polizia_locale(
                             if rr2.status_code != 200:
                                 continue
                             pages_visited.append(rr2.url)
-                            _harvest(rr2.text, url_is_pl=_path_is_polizia(rr2.url) or _path_is_polizia(u))
+                            _harvest(rr2.text, url_is_pl=_path_is_polizia(rr2.url) or _path_is_polizia(u), page_url=rr2.url)
                         except Exception:
                             continue
                 except Exception:
@@ -484,7 +538,7 @@ def scrape_polizia_locale(
                     if rr.status_code != 200:
                         continue
                     pages_visited.append(rr.url)
-                    _harvest(rr.text, url_is_pl=True)
+                    _harvest(rr.text, url_is_pl=True, page_url=rr.url)
                     # esplora qualche link interno
                     if not (pec_all or mail_all):
                         soup = BeautifulSoup(rr.text, "html.parser")
@@ -510,7 +564,7 @@ def scrape_polizia_locale(
                 r = session.get(site, timeout=req_timeout)
                 pages_visited.append(r.url)
                 soup = BeautifulSoup(r.text, "html.parser")
-                _harvest(r.text, url_is_pl=False)
+                _harvest(r.text, url_is_pl=False, page_url=r.url)
 
                 # Livello 1: visita i link più specifici prima
                 candidates = _candidate_links(soup, base)
@@ -533,7 +587,7 @@ def scrape_polizia_locale(
                             continue
                         pages_visited.append(rr.url)
                         is_pl = _path_is_polizia(rr.url) or _path_is_polizia(url)
-                        _harvest(rr.text, url_is_pl=is_pl)
+                        _harvest(rr.text, url_is_pl=is_pl, page_url=rr.url)
                         if pec_all or mail_all:
                             break
                         # Livello 2: se la pagina è un indice "uffici" o
@@ -554,7 +608,7 @@ def scrape_polizia_locale(
                                     continue
                                 pages_visited.append(rr2.url)
                                 is_pl2 = _path_is_polizia(rr2.url) or _path_is_polizia(u2)
-                                _harvest(rr2.text, url_is_pl=is_pl2)
+                                _harvest(rr2.text, url_is_pl=is_pl2, page_url=rr2.url)
                                 if pec_all or mail_all:
                                     break
                                 # Livello 3 (solo se la pagina visitata è un indice
@@ -574,7 +628,7 @@ def scrape_polizia_locale(
                                             if rr3.status_code != 200:
                                                 continue
                                             pages_visited.append(rr3.url)
-                                            _harvest(rr3.text, url_is_pl=True)
+                                            _harvest(rr3.text, url_is_pl=True, page_url=rr3.url)
                                             if pec_all or mail_all:
                                                 break
                                         except Exception:

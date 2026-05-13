@@ -28,6 +28,60 @@ from contextlib import suppress
 from .indicepa import is_pl_specific_email
 from .scraper import EMAIL_RE, _is_pec
 from .utils import is_likely_personal_email
+from bs4 import BeautifulSoup
+
+
+def _ocr_images_from_html(html: str, base_url: str = "") -> str:
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    texts = []
+    for img in soup.find_all("img")[:3]:
+        src = img.get("src")
+        if not src:
+            continue
+        try:
+            if src.startswith("data:"):
+                import base64
+                header, b64 = src.split(",", 1)
+                data = base64.b64decode(b64)
+                from io import BytesIO
+                im = Image.open(BytesIO(data)).convert("RGB")
+            else:
+                from urllib.parse import urljoin
+                import requests
+                url = urljoin(base_url, src)
+                r = requests.get(url, timeout=6)
+                if r.status_code != 200:
+                    continue
+                from io import BytesIO
+                im = Image.open(BytesIO(r.content)).convert("RGB")
+            texts.append(pytesseract.image_to_string(im, lang='ita'))
+        except Exception:
+            continue
+    return " ".join(t for t in texts if t)
+
+
+GENERIC_LOCAL_PARTS = (
+    "info",
+    "segreteria",
+    "protocollo",
+    "ufficio",
+    "amministrazione",
+    "contatti",
+    "contact",
+    "help",
+    "service",
+    "webmaster",
+    "noreply",
+    "postmaster",
+)
 
 
 _USER_AGENT = (
@@ -130,7 +184,15 @@ class WebSearchFinder:
             url = "https://www.bing.com/search?q=" + query.replace(" ", "+") + "&setlang=it"
             await page.goto(url, timeout=self.timeout_ms, wait_until="domcontentloaded")
             await page.wait_for_timeout(700)
-            return await page.content()
+            html = await page.content()
+            # try OCR on images inside the page
+            try:
+                ocr_text = _ocr_images_from_html(html, base_url=url)
+                if ocr_text:
+                    return html + " " + ocr_text
+            except Exception:
+                pass
+            return html
         except Exception:
             return ""
         finally:
@@ -193,6 +255,12 @@ class WebSearchFinder:
                 # scarta indirizzi personali/di provider gratuiti se non PL-specifici
                 if is_likely_personal_email(email) and not is_pl_specific_email(email):
                     continue
+                # quando non strettamente PL, scartiamo local-part generiche
+                local = email.split("@", 1)[0].lower()
+                if not strict_pl_local and not is_pl_specific_email(email):
+                    if any(local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-") for g in GENERIC_LOCAL_PARTS):
+                        if not any(pk in html.lower() for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                            continue
                 if not _domain_ok(email):
                     continue
                 start = max(0, m.start() - 80)

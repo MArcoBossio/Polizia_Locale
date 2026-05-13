@@ -6,3 +6,6 @@ lxml>=4.9
 tqdm>=4.66
 pypdf>=4.0
 playwright>=1.40
+pillow>=10.0
+pytesseract>=0.3.10
+pdf2image>=1.17.0

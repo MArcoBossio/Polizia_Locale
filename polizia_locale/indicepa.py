@@ -140,6 +140,7 @@ def _load_aoo_df() -> pd.DataFrame:
 _PL_LOCAL_PARTS = (
     "polizialocale",
     "poliziamunicipale",
+    "polizia-municipale",
     "polizia.locale",
     "polizia.municipale",
     "polizia-locale",
