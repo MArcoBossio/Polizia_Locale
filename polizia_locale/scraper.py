@@ -251,6 +251,7 @@ def _ocr_page_screenshot(url: str, timeout_ms: int = 15000) -> str:
     Utile quando il testo della mail e' presente solo in immagini, canvas o
     contenuto renderizzato via JavaScript.
     """
+
     try:
         from PIL import Image
         import pytesseract
@@ -270,7 +271,19 @@ def _ocr_page_screenshot(url: str, timeout_ms: int = 15000) -> str:
             page.wait_for_timeout(1000)
             img = page.screenshot(full_page=True)
             browser.close()
-        screenshot = Image.open(BytesIO(img)).convert("RGB")
+        from io import BytesIO
+
+        def _open_image_safe(data: bytes) -> "Image.Image":
+            im = Image.open(BytesIO(data))
+            if im.mode == "P" and "transparency" in im.info:
+                im = im.convert("RGBA")
+                bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+                im = Image.alpha_composite(bg, im).convert("RGB")
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            return im
+
+        screenshot = _open_image_safe(img)
         return pytesseract.image_to_string(screenshot, lang="ita")
     except Exception:
         return ""
@@ -315,7 +328,19 @@ def _browser_rendered_text(url: str, timeout_ms: int = 15000) -> str:
             page.wait_for_timeout(1000)
             img = page.screenshot(full_page=True)
             browser.close()
-        screenshot = Image.open(BytesIO(img)).convert("RGB")
+        from io import BytesIO
+
+        def _open_image_safe(data: bytes) -> "Image.Image":
+            im = Image.open(BytesIO(data))
+            if im.mode == "P" and "transparency" in im.info:
+                im = im.convert("RGBA")
+                bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+                im = Image.alpha_composite(bg, im).convert("RGB")
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            return im
+
+        screenshot = _open_image_safe(img)
         return pytesseract.image_to_string(screenshot, lang="ita")
     except Exception:
         return ""
@@ -503,11 +528,24 @@ def scrape_polizia_locale(
         if strict_pl_local:
             for m in EMAIL_RE.finditer(html):
                 e = m.group(0)
+                ctx = html[max(0, m.start() - 80): m.end() + 80]
                 if is_pl_specific_email(e):
-                    if _is_pec(e, html[max(0, m.start()-80):m.end()+80]):
+                    if _is_pec(e, ctx):
                         pec_all.add(e)
                     else:
                         mail_all.add(e)
+                else:
+                    # allow generic local-parts (info@, segreteria@, ...) when
+                    # the page or nearby context clearly references Polizia Locale
+                    ctx_l = ctx.lower()
+                    if url_is_pl or any(pk in ctx_l for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                        # avoid free provider/personal emails
+                        if is_likely_personal_email(e):
+                            continue
+                        if _is_pec(e, ctx):
+                            pec_all.add(e)
+                        else:
+                            mail_all.add(e)
         else:
             pairs = _extract_emails_with_context(html)
             p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)

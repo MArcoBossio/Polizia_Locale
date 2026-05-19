@@ -95,8 +95,14 @@ def _harvest_emails(text: str, _domain_ok, only_pl_specific: bool = True) -> tup
     pec, mail = set(), set()
     for m in EMAIL_RE.finditer(text):
         email = m.group(0)
+        # In strict mode we normally accept only PL-specific local-parts
+        # (polizialocale@, vigili@, ...). However, accept generic local-parts
+        # like info@ when the surrounding snippet contains clear indicators
+        # of Polizia Locale to avoid false negatives.
         if only_pl_specific and not is_pl_specific_email(email):
-            continue
+            snippet_l = text.lower()
+            if not any(pk in snippet_l for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                continue
         # scarta indirizzi personali/di provider gratuiti se non PL-specifici
         if is_likely_personal_email(email) and not is_pl_specific_email(email):
             continue
@@ -220,6 +226,19 @@ class BraveSearchFinder:
                 try:
                     import pytesseract
                     from PIL import Image
+                    from io import BytesIO
+
+                    def _open_image_safe(data: bytes) -> "Image.Image":
+                        im = Image.open(BytesIO(data))
+                        # handle palette images with transparency properly
+                        if im.mode == "P" and "transparency" in im.info:
+                            im = im.convert("RGBA")
+                            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+                            im = Image.alpha_composite(bg, im).convert("RGB")
+                        elif im.mode != "RGB":
+                            im = im.convert("RGB")
+                        return im
+
                     images = []
                     for img in soup.find_all("img"):
                         src = img.get("src")
@@ -231,8 +250,7 @@ class BraveSearchFinder:
                                 import base64
                                 header, b64 = src.split(",", 1)
                                 data = base64.b64decode(b64)
-                                from io import BytesIO
-                                im = Image.open(BytesIO(data)).convert("RGB")
+                                im = _open_image_safe(data)
                                 images.append(im)
                             except Exception:
                                 continue
@@ -245,9 +263,7 @@ class BraveSearchFinder:
                                 ir = self._page_sess.get(img_url, timeout=6)
                                 if ir.status_code != 200:
                                     continue
-                                from io import BytesIO
-
-                                im = Image.open(BytesIO(ir.content)).convert("RGB")
+                                im = _open_image_safe(ir.content)
                                 images.append(im)
                             except Exception:
                                 continue

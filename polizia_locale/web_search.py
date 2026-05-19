@@ -42,6 +42,18 @@ def _ocr_images_from_html(html: str, base_url: str = "") -> str:
     except Exception:
         return ""
     texts = []
+    from io import BytesIO
+
+    def _open_image_safe(data: bytes) -> "Image.Image":
+        im = Image.open(BytesIO(data))
+        if im.mode == "P" and "transparency" in im.info:
+            im = im.convert("RGBA")
+            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+            im = Image.alpha_composite(bg, im).convert("RGB")
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        return im
+
     for img in soup.find_all("img")[:3]:
         src = img.get("src")
         if not src:
@@ -51,8 +63,7 @@ def _ocr_images_from_html(html: str, base_url: str = "") -> str:
                 import base64
                 header, b64 = src.split(",", 1)
                 data = base64.b64decode(b64)
-                from io import BytesIO
-                im = Image.open(BytesIO(data)).convert("RGB")
+                im = _open_image_safe(data)
             else:
                 from urllib.parse import urljoin
                 import requests
@@ -60,8 +71,7 @@ def _ocr_images_from_html(html: str, base_url: str = "") -> str:
                 r = requests.get(url, timeout=6)
                 if r.status_code != 200:
                     continue
-                from io import BytesIO
-                im = Image.open(BytesIO(r.content)).convert("RGB")
+                im = _open_image_safe(r.content)
             texts.append(pytesseract.image_to_string(im, lang='ita'))
         except Exception:
             continue
@@ -250,8 +260,15 @@ class WebSearchFinder:
                 continue
             for m in EMAIL_RE.finditer(html):
                 email = m.group(0)
+                # compute surrounding context for smarter decisions
+                start = max(0, m.start() - 80)
+                end = min(len(html), m.end() + 80)
+                ctx = html[start:end].lower()
                 if strict_pl_local and not is_pl_specific_email(email):
-                    continue
+                    # accept generic local-parts (e.g. info@) when the context
+                    # clearly references Polizia Locale to avoid false negatives
+                    if not any(pk in ctx for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
+                        continue
                 # scarta indirizzi personali/di provider gratuiti se non PL-specifici
                 if is_likely_personal_email(email) and not is_pl_specific_email(email):
                     continue
