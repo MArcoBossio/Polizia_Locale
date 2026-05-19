@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
@@ -124,15 +125,35 @@ def download_enti() -> str:
 
 
 def _load_uo_df() -> pd.DataFrame:
-    path = download_uo()
-    df = pd.read_excel(path, dtype=str, engine="openpyxl")
+    path = Path(download_uo())
+    csv_path = cached_path("indicepa_uo.csv")
+    
+    # Se il CSV cached esiste ed è più recente dell'Excel, usalo
+    if csv_path.exists() and csv_path.stat().st_mtime > path.stat().st_mtime:
+        df = pd.read_csv(csv_path, dtype=str, low_memory=False)
+    else:
+        # Carica da Excel e cachea come CSV per prossimi usi
+        print("      Convertendo UO da Excel a CSV (primo utilizzo, attendere)...")
+        df = pd.read_excel(str(path), dtype=str, engine="openpyxl")
+        df.to_csv(csv_path, index=False)
+    
     df.columns = [c.strip() for c in df.columns]
     return df.fillna("")
 
 
 def _load_aoo_df() -> pd.DataFrame:
-    path = download_aoo()
-    df = pd.read_excel(path, dtype=str, engine="openpyxl")
+    path = Path(download_aoo())
+    csv_path = cached_path("indicepa_aoo.csv")
+    
+    # Se il CSV cached esiste ed è più recente dell'Excel, usalo
+    if csv_path.exists() and csv_path.stat().st_mtime > path.stat().st_mtime:
+        df = pd.read_csv(csv_path, dtype=str, low_memory=False)
+    else:
+        # Carica da Excel e cachea come CSV per prossimi usi
+        print("      Convertendo AOO da Excel a CSV (primo utilizzo, attendere)...")
+        df = pd.read_excel(str(path), dtype=str, engine="openpyxl")
+        df.to_csv(csv_path, index=False)
+    
     df.columns = [c.strip() for c in df.columns]
     return df.fillna("")
 

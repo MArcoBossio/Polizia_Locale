@@ -190,6 +190,50 @@ def _candidate_links(soup: BeautifulSoup, base: str) -> list[tuple[str, int]]:
     return out
 
 
+def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8) -> list[str]:
+    """Fallback più largo per siti con struttura molto diversa.
+
+    Quando i path espliciti della PL non esistono, proviamo anche link meno
+    specifici ma ancora plausibili (contatti, uffici, servizi, segreteria,
+    supporto), mantenendo solo quelli interni allo stesso dominio.
+    """
+    base_host = urlparse(base).netloc
+    scored: list[tuple[str, int]] = []
+    for a in soup.find_all("a", href=True):
+        text = (a.get_text() or "").strip().lower()
+        href = a["href"]
+        hay = f"{text} {href.lower()}"
+        score = 0
+        if any(k in hay for k in ("polizia", "vigili", "comando", "municipale")):
+            score = 4
+        elif any(k in hay for k in ("contatt", "email", "pec", "urp", "sportello", "assistenza", "support", "help")):
+            score = 3
+        elif any(k in hay for k in ("uffici", "servizi", "amministrazione", "segreteria", "anagrafe", "protocollo")):
+            score = 2
+        elif any(k in hay for k in ("news", "avvisi", "trasparenza", "redazione", "faq")):
+            score = 1
+        if score == 0:
+            continue
+        absu = urljoin(base, href)
+        if not absu.startswith("http"):
+            continue
+        if urlparse(absu).netloc and urlparse(absu).netloc != base_host:
+            continue
+        if any(absu.lower().endswith(ext) for ext in (".jpg", ".png", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip")):
+            continue
+        scored.append((absu, score))
+    seen: set[str] = set()
+    out: list[str] = []
+    for url, _score in sorted(scored, key=lambda x: -x[1]):
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
     """Ritorna (email, contesto_breve)."""
     out = []
@@ -211,6 +255,51 @@ def _ocr_page_screenshot(url: str, timeout_ms: int = 15000) -> str:
         from PIL import Image
         import pytesseract
         from playwright.sync_api import sync_playwright
+    except Exception:
+        return ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=USER_AGENT,
+                locale="it-IT",
+                viewport={"width": 1440, "height": 2200},
+            )
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_timeout(1000)
+            img = page.screenshot(full_page=True)
+            browser.close()
+        screenshot = Image.open(BytesIO(img)).convert("RGB")
+        return pytesseract.image_to_string(screenshot, lang="ita")
+    except Exception:
+        return ""
+
+
+def _browser_rendered_text(url: str, timeout_ms: int = 15000) -> str:
+    """Restituisce il testo renderizzato dal browser reale.
+
+    Serve per pagine che espongono i contatti solo dopo rendering JS oppure
+    dentro pannelli/tabs che non compaiono nel markup statico scaricato via HTTP.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=USER_AGENT,
+                locale="it-IT",
+                viewport={"width": 1440, "height": 2200},
+            )
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_timeout(800)
+            text = page.locator("body").inner_text(timeout=3000)
+            browser.close()
+            return text or ""
     except Exception:
         return ""
 
@@ -398,6 +487,13 @@ def scrape_polizia_locale(
     base = f"{parsed.scheme}://{parsed.netloc}"
     host = parsed.netloc.lstrip("www.")
 
+    seed_urls: list[str] = []
+    if site_hint.strip():
+        hint = site_hint.strip()
+        hint_parsed = urlparse(hint if hint.startswith(("http://", "https://")) else "https://" + hint)
+        if hint_parsed.netloc and hint_parsed.netloc == parsed.netloc and hint_parsed.path not in ("", "/"):
+            seed_urls.append(hint_parsed.geturl())
+
     pages_visited: list[str] = []
     pec_all: set[str] = set()
     mail_all: set[str] = set()
@@ -428,28 +524,58 @@ def scrape_polizia_locale(
             pec_all.update(p)
             mail_all.update(ml)
 
-        # OCR fallback: se la pagina sembra rilevante ma non abbiamo trovato mail,
-        # rendiamo lo screenshot e cerchiamo testo in immagini / rendering JS.
+        # Fallback: prima il testo renderizzato dal browser, poi lo screenshot OCR.
         if (not found_before) and not (pec_all or mail_all) and page_url:
             html_l = html.lower()
             if url_is_pl or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
-                ocr_text = _ocr_page_screenshot(page_url)
-                if ocr_text:
+                rendered_text = _browser_rendered_text(page_url)
+                if rendered_text:
                     if strict_pl_local:
-                        for m in EMAIL_RE.finditer(ocr_text):
+                        for m in EMAIL_RE.finditer(rendered_text):
                             e = m.group(0)
                             if is_pl_specific_email(e) or _email_on_official_domain(e):
-                                if _is_pec(e, ocr_text[max(0, m.start()-80):m.end()+80]):
+                                if _is_pec(e, rendered_text[max(0, m.start()-80):m.end()+80]):
                                     pec_all.add(e)
                                 else:
                                     mail_all.add(e)
                     else:
-                        pairs = _extract_emails_with_context(ocr_text)
+                        pairs = _extract_emails_with_context(rendered_text)
                         p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
                         pec_all.update(p)
                         mail_all.update(ml)
 
+                if not (pec_all or mail_all):
+                    ocr_text = _ocr_page_screenshot(page_url)
+                    if ocr_text:
+                        if strict_pl_local:
+                            for m in EMAIL_RE.finditer(ocr_text):
+                                e = m.group(0)
+                                if is_pl_specific_email(e) or _email_on_official_domain(e):
+                                    if _is_pec(e, ocr_text[max(0, m.start()-80):m.end()+80]):
+                                        pec_all.add(e)
+                                    else:
+                                        mail_all.add(e)
+                        else:
+                            pairs = _extract_emails_with_context(ocr_text)
+                            p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
+                            pec_all.update(p)
+                            mail_all.update(ml)
+
     try:
+        # 0) Se il chiamante ha passato una pagina ufficio specifica, la visitiamo
+        # per prima: molte schede PA espongono i contatti solo lì.
+        for url in seed_urls:
+            if time.monotonic() > deadline or (pec_all or mail_all):
+                break
+            try:
+                rr = session.get(url, timeout=req_timeout, allow_redirects=True)
+                if rr.status_code != 200:
+                    continue
+                pages_visited.append(rr.url)
+                _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url) or _path_is_polizia(url), page_url=rr.url)
+            except Exception:
+                continue
+
         # 1) Path diretti
         for path in _DIRECT_PATH_HINTS:
             if time.monotonic() > deadline or (pec_all or mail_all):
@@ -659,6 +785,29 @@ def scrape_polizia_locale(
                                                     mail_all.update(m2)
                             except Exception:
                                 continue
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # 4) Fallback largo: siti molto diversi o browser bloccato.
+        if not (pec_all or mail_all):
+            try:
+                r = session.get(site, timeout=req_timeout)
+                soup = BeautifulSoup(r.text, "html.parser")
+                broad_candidates = _broad_candidate_links(soup, base, limit=max(4, int(max_candidates) * 2))
+                for url in broad_candidates:
+                    if time.monotonic() > deadline or (pec_all or mail_all):
+                        break
+                    try:
+                        rr = session.get(url, timeout=req_timeout, allow_redirects=True)
+                        if rr.status_code != 200:
+                            continue
+                        pages_visited.append(rr.url)
+                        is_pl = _path_is_polizia(rr.url) or _path_is_polizia(url)
+                        _harvest(rr.text, url_is_pl=is_pl, page_url=rr.url)
+                        if pec_all or mail_all:
+                            break
                     except Exception:
                         continue
             except Exception:
