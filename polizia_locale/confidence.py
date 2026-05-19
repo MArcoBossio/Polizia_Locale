@@ -5,6 +5,7 @@ import re
 
 from .indicepa import is_pl_specific_email
 from .normalization import canonical_commune_name, normalize_text
+from urllib.parse import urlparse
 
 
 SOURCE_BASE = {
@@ -67,6 +68,15 @@ def _score_email_value(email: str) -> float:
     return 0.0
 
 
+def _domain_root(domain: str) -> str:
+    parts = [part for part in domain.lower().split(".") if part]
+    if len(parts) >= 3 and parts[-2:] in (["gov", "it"], ["com", "it"]):
+        return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain.lower()
+
+
 def score_row(row: dict) -> tuple[float, str]:
     fonte = (row.get("fonte") or "").strip()
     matched_by = row.get("matched_by") or ""
@@ -85,6 +95,13 @@ def score_row(row: dict) -> tuple[float, str]:
         score += 0.03
         reasons.append("has_email")
         score += _score_email_value(email)
+        if sito and "@" in email:
+            email_domain = email.split("@", 1)[1]
+            site_host = urlparse(sito if sito.startswith(("http://", "https://")) else "https://" + sito).netloc.lower().lstrip("www.")
+            if site_host:
+                if email_domain == site_host or email_domain.endswith("." + site_host) or _domain_root(email_domain) == _domain_root(site_host):
+                    score += SOURCE_BONUS["site_match"]
+                    reasons.append("site_match")
 
     if sito:
         score += 0.02

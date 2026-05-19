@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from urllib.parse import urlparse
 
 try:
     from rapidfuzz.fuzz import ratio as _rapid_ratio
@@ -86,3 +87,27 @@ def commune_variants(text: str) -> list[str]:
         if target in canonical:
             variants.append(canonical.replace(target, alias))
     return list(dict.fromkeys(variant for variant in variants if variant))
+
+
+def canonical_email_key(email: str) -> str:
+    if not email or "@" not in email:
+        return ""
+    local, domain = email.lower().split("@", 1)
+    local = re.sub(r"[^a-z0-9]+", "", strip_accents(local))
+    domain = re.sub(r"\s+", "", strip_accents(domain))
+    return f"{local}@{domain}"
+
+
+def canonical_site_root(site: str) -> str:
+    if not site:
+        return ""
+    parsed = urlparse(site if site.startswith(("http://", "https://")) else "https://" + site)
+    host = parsed.netloc.lower().lstrip("www.").strip()
+    if not host:
+        return ""
+    parts = [part for part in host.split(".") if part]
+    if len(parts) >= 3 and parts[-2:] in (["gov", "it"], ["com", "it"]):
+        return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return host

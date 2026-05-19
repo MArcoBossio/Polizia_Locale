@@ -369,3 +369,31 @@ def load_enti_index() -> dict[str, dict]:
             "mail_comune": " | ".join(dict.fromkeys(mail_list)),
         }
     return idx
+
+
+def build_enti_linkage_by_istat() -> dict[str, dict]:
+    """Ritorna un indice normalizzato per Codice ISTAT con sito e PEC del comune.
+
+    Questo è il punto unico da usare quando serve collegare:
+    comune -> ente IPA -> sito istituzionale -> PEC/mail del Comune.
+    """
+    idx = load_enti_index()
+    by_istat: dict[str, dict] = {}
+    for info in idx.values():
+        ci = str(info.get("codice_istat", "")).strip().zfill(6)
+        if not ci:
+            continue
+        current = by_istat.get(ci)
+        if current is None:
+            by_istat[ci] = dict(info)
+            continue
+        # preferisci dati completi: sito, pec, mail
+        for key in ("sito", "pec_comune", "mail_comune", "denominazione", "indirizzo", "cap"):
+            if not current.get(key) and info.get(key):
+                current[key] = info.get(key)
+    return by_istat
+
+
+def build_site_index_by_istat() -> dict[str, str]:
+    linkage = build_enti_linkage_by_istat()
+    return {ci: str(info.get("sito", "")).strip() for ci, info in linkage.items() if info.get("sito")}

@@ -13,7 +13,14 @@ from tqdm import tqdm
 from .comuni import load_comuni
 from .confidence import apply_confidence
 from .exporter import export_all
-from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index, is_pl_specific_email
+from .indicepa import (
+    build_enti_linkage_by_istat,
+    build_site_index_by_istat,
+    find_polizia_locale_aoo,
+    find_polizia_locale_uo,
+    is_pl_specific_email,
+)
+from .normalization import canonical_email_key, canonical_commune_name, canonical_site_root
 from .regions import list_regions, resolve_region
 from .scraper import scrape_polizia_locale
 from .unioni import (
@@ -168,21 +175,20 @@ def _run(region_code: str, region_name: str, args) -> int:
             )
 
     enti_idx = None
+    enti_linkage_by_istat: dict[str, dict] = {}
     if args.scrape or args.include_comune_pec:
         print("[3/4] Carico l'indice Enti per recuperare i siti istituzionali...")
         try:
-            enti_idx = load_enti_index()
+            enti_linkage_by_istat = build_enti_linkage_by_istat()
+            enti_idx = enti_linkage_by_istat
         except Exception as e:
             print(f"      Avviso: impossibile caricare il dataset Enti ({e})")
             enti_idx = {}
 
     # Indice PEC istituzionale del Comune (per Codice_comune_ISTAT) per arricchimento
     pec_comune_by_istat: dict[str, dict] = {}
-    if enti_idx:
-        for info in enti_idx.values():
-            ci = info.get("codice_istat")
-            if ci:
-                pec_comune_by_istat.setdefault(ci, info)
+    if enti_linkage_by_istat:
+        pec_comune_by_istat.update(enti_linkage_by_istat)
 
     rows: list[dict] = []
     missing: list = []
@@ -249,16 +255,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                 f"(workers={args.workers})..."
             )
 
-        site_by_istat: dict[str, str] = {}
-        pec_comune_by_istat: dict[str, dict] = {}
-        if enti_idx:
-            for info in enti_idx.values():
-                ci = info.get("codice_istat")
-                if not ci:
-                    continue
-                if info.get("sito"):
-                    site_by_istat.setdefault(ci, info["sito"])
-                pec_comune_by_istat.setdefault(ci, info)
+        site_by_istat = build_site_index_by_istat() if enti_linkage_by_istat else {}
+        pec_comune_by_istat = dict(enti_linkage_by_istat)
 
         def _scrape_one(c):
             site_hint = site_by_istat.get(c.codice_istat, "")
@@ -657,7 +655,7 @@ def _run(region_code: str, region_name: str, args) -> int:
             if args.include_comune_pec and enti_idx is None:
                 # carichiamo on-demand se non lo avevamo ancora fatto
                 try:
-                    enti_idx = load_enti_index()
+                    enti_idx = build_enti_linkage_by_istat()
                 except Exception:
                     enti_idx = {}
             if args.include_comune_pec and enti_idx:
@@ -722,6 +720,15 @@ def _run(region_code: str, region_name: str, args) -> int:
         order: list[tuple[str, str]] = []
         passthrough: list[dict] = []
 
+        def _canonical_contact_pair(row: dict) -> tuple[str, str]:
+            pec = (row.get("pec") or "").strip()
+            mail = (row.get("email") or "").strip()
+            pec_key = canonical_email_key(pec)
+            mail_key = canonical_email_key(mail)
+            if pec_key or mail_key:
+                return tuple(sorted(filter(None, {pec_key, mail_key})))
+            return (pec, mail)
+
         for row in input_rows:
             pec = (row.get("pec") or "").strip()
             mail = (row.get("email") or "").strip()
@@ -745,7 +752,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                 passthrough.append(row)
                 continue
 
-            key = (pec, mail)
+            key = _canonical_contact_pair(row)
             current = grouped.get(key)
             if current is None:
                 current = dict(row)
@@ -804,11 +811,65 @@ def _run(region_code: str, region_name: str, args) -> int:
             if confidence_values:
                 row["confidence"] = round(max(confidence_values), 3)
             row["matched_by"] = " | ".join(matched_by_values)
+            # conserva solo il contatto più informativo tra PEC e mail, evitando duplicati canonici
+            pec_key = canonical_email_key(row.get("pec", ""))
+            mail_key = canonical_email_key(row.get("email", ""))
+            if pec_key and mail_key and pec_key == mail_key:
+                row["email"] = row.get("pec", "")
             output_rows.append(row)
 
         return output_rows
 
+    def _cluster_related_contacts(input_rows: list[dict]) -> list[dict]:
+        clustered: dict[tuple[str, str], dict] = {}
+        order: list[tuple[str, str]] = []
+        for row in input_rows:
+            comune_key = canonical_commune_name(row.get("comune") or row.get("denominazione_ente") or "")
+            site_key = canonical_site_root(row.get("sito") or "")
+            if not comune_key:
+                comune_key = (row.get("comune") or row.get("denominazione_ente") or "").strip().lower()
+            key = (comune_key, site_key)
+            current = clustered.get(key)
+            if current is None:
+                current = dict(row)
+                current.setdefault("cluster_members", [])
+                current["cluster_members"].append(row.get("comune", ""))
+                clustered[key] = current
+                order.append(key)
+                continue
+
+            for field in ("pec", "email", "sito", "fonte", "matched_by"):
+                value = (row.get(field) or "").strip()
+                if not value:
+                    continue
+                existing = (current.get(field) or "").strip()
+                if not existing:
+                    current[field] = value
+                elif value not in existing:
+                    current[field] = f"{existing} | {value}"
+
+            current.setdefault("cluster_members", []).append(row.get("comune", ""))
+            try:
+                current["confidence"] = max(float(current.get("confidence", 0) or 0), float(row.get("confidence", 0) or 0))
+            except Exception:
+                pass
+
+        output_rows: list[dict] = []
+        for key in order:
+            row = clustered[key]
+            members: list[str] = []
+            for member in row.get("cluster_members", []):
+                member = (member or "").strip()
+                if member and member not in members:
+                    members.append(member)
+            if members:
+                row["comuni_associati"] = row.get("comuni_associati", "") or " | ".join(members)
+                row["comune"] = row.get("comune", members[0]) or members[0]
+            output_rows.append(row)
+        return output_rows
+
     rows = _group_shared_contacts(rows)
+    rows = _cluster_related_contacts(rows)
     rows = apply_confidence(rows)
 
     # esportazione

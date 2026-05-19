@@ -17,7 +17,7 @@ import re
 import time
 from dataclasses import dataclass
 from io import BytesIO
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
 import unicodedata
 
 import requests
@@ -243,9 +243,12 @@ def _candidate_links(soup: BeautifulSoup, base: str, page_is_pl: bool = False) -
     """
     scored: list[tuple[str, int]] = []
     base_host = urlparse(base).netloc
+    base_clean = urldefrag(base).url
     for a in soup.find_all("a", href=True):
         text = (a.get_text() or "").strip().lower()
         href = a["href"]
+        if not href or href.startswith("#"):
+            continue
         hay = (text + " " + href.lower())
         score = 0
         if any(
@@ -281,6 +284,8 @@ def _candidate_links(soup: BeautifulSoup, base: str, page_is_pl: bool = False) -
         absu = urljoin(base, href)
         if not absu.startswith("http"):
             continue
+        if urldefrag(absu).url == base_clean:
+            continue
         # solo link interni allo stesso dominio
         if urlparse(absu).netloc and urlparse(absu).netloc != base_host:
             continue
@@ -307,10 +312,13 @@ def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8, page_
     supporto), mantenendo solo quelli interni allo stesso dominio.
     """
     base_host = urlparse(base).netloc
+    base_clean = urldefrag(base).url
     scored: list[tuple[str, int]] = []
     for a in soup.find_all("a", href=True):
         text = (a.get_text() or "").strip().lower()
         href = a["href"]
+        if not href or href.startswith("#"):
+            continue
         hay = f"{text} {href.lower()}"
         score = 0
         if any(k in hay for k in ("polizia", "vigili", "comando", "municipale")):
@@ -327,6 +335,8 @@ def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8, page_
             continue
         absu = urljoin(base, href)
         if not absu.startswith("http"):
+            continue
+        if urldefrag(absu).url == base_clean:
             continue
         if urlparse(absu).netloc and urlparse(absu).netloc != base_host:
             continue
@@ -626,6 +636,55 @@ def _path_is_polizia(url: str) -> bool:
     )
 
 
+def _enqueue_candidate_pages(
+    frontier: list[tuple[int, str]],
+    soup: BeautifulSoup,
+    base: str,
+    page_is_pl: bool,
+    seen: set[str],
+    min_score: int = 1,
+    limit: int = 16,
+) -> None:
+    for url, score in _candidate_links(soup, base, page_is_pl=page_is_pl):
+        if score < min_score or url in seen:
+            continue
+        seen.add(url)
+        frontier.append((score, url))
+        if len(frontier) >= limit:
+            break
+
+
+def _maybe_extract_pdfs(
+    session: requests.Session,
+    page_html: str,
+    page_url: str,
+    base: str,
+    deadline: float,
+    req_timeout: tuple[int, int],
+    strict_pl_local: bool,
+    pdf_extract: bool,
+    accept_email,
+    pec_all: set[str],
+    mail_all: set[str],
+) -> None:
+    if not pdf_extract or (pec_all or mail_all):
+        return
+    from .pdf_extractor import extract_emails_from_pdf_url, find_pdf_links, find_pdf_links_broad
+
+    pdfs = list(
+        dict.fromkeys(
+            find_pdf_links(page_html, page_url or base, limit=6)
+            + find_pdf_links_broad(page_html, page_url or base, limit=8)
+        )
+    )[:10]
+    for pdf_url in pdfs:
+        if time.monotonic() > deadline or (pec_all or mail_all):
+            break
+        pairs = extract_emails_from_pdf_url(session, pdf_url, timeout=6)
+        for em, ctx in pairs:
+            accept_email(em, ctx, page_html, True, "pdf")
+
+
 def scrape_polizia_locale(
     comune: str,
     provincia: str,
@@ -762,18 +821,16 @@ def scrape_polizia_locale(
                 continue
 
         # 1) Path diretti
-        for path in _DIRECT_PATH_HINTS:
-            if time.monotonic() > deadline or (pec_all or mail_all):
-                break
-            url = base + path
-            try:
-                rr = session.get(url, timeout=req_timeout, allow_redirects=True)
-                if rr.status_code != 200:
+        if not (pec_all or mail_all):
+            direct_urls = [base + path for path in _DIRECT_PATH_HINTS[: max(6, max_candidates * 2)]]
+            fetched_direct = _fetch_many(session, direct_urls, req_timeout)
+            for origin_url, status_code, final_url, text in fetched_direct:
+                if time.monotonic() > deadline or (pec_all or mail_all):
+                    break
+                if not status_code or not text:
                     continue
-                pages_visited.append(rr.url)
-                _harvest(rr.text, url_is_pl=_path_is_polizia(rr.url), page_url=rr.url)
-            except Exception:
-                continue
+                pages_visited.append(final_url)
+                _harvest(text, url_is_pl=_path_is_polizia(final_url) or _path_is_polizia(origin_url), page_url=final_url)
 
         # 1b) Sitemap discovery: molti siti PA pubblicano le UO solo via sitemap
         if not (pec_all or mail_all):
@@ -869,99 +926,70 @@ def scrape_polizia_locale(
                 except Exception:
                     continue
 
-        # 3) Homepage + candidate links con BFS 2 livelli
+        # 3) Homepage + frontiera BFS prioritaria su più livelli
+        home_html = ""
+        home_url = site
         if not (pec_all or mail_all):
             try:
                 r = session.get(site, timeout=req_timeout)
                 pages_visited.append(r.url)
+                home_html = r.text
+                home_url = r.url
                 soup = BeautifulSoup(r.text, "html.parser")
                 _harvest(r.text, url_is_pl=False, page_url=r.url)
 
-                # Livello 1: visita i link più specifici prima
-                candidates = _candidate_links(soup, base, page_is_pl=False)
-                visited_level1: set[str] = set()
-                # priorità: prima score=3, poi 2, poi 1 (incluso uffici/amm)
-                lvl1_high = [u for u, s in candidates if s == 3][:6]
-                lvl1_med = [u for u, s in candidates if s == 2][:4]
-                lvl1_low = [u for u, s in candidates if s == 1][:6]
-                queue_lvl1 = lvl1_high + lvl1_med + lvl1_low
-                fetched_lvl1 = _fetch_many(session, queue_lvl1, req_timeout)
-                lvl2_candidates: list[str] = []
-                lvl2_html: dict[str, tuple[str, bool]] = {}
+                frontier: list[tuple[int, str]] = []
+                seen_frontier: set[str] = {r.url, site}
+                _enqueue_candidate_pages(frontier, soup, base, False, seen_frontier, limit=max(16, max_candidates * 6))
 
-                for origin_url, status_code, final_url, text in fetched_lvl1:
-                    if time.monotonic() > deadline or (pec_all or mail_all):
-                        break
-                    if not status_code or not text:
-                        continue
-                    visited_level1.add(origin_url)
-                    pages_visited.append(final_url)
-                    is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
-                    _harvest(text, url_is_pl=is_pl, page_url=final_url)
-                    if pec_all or mail_all:
-                        break
-                    sub_soup = BeautifulSoup(text, "html.parser")
-                    lvl2 = _candidate_links(sub_soup, base, page_is_pl=is_pl)
-                    for u2, s2 in lvl2:
-                        if s2 >= 2 and u2 not in visited_level1:
-                            lvl2_candidates.append(u2)
-                    lvl2_html[origin_url] = (text, is_pl)
-
-                lvl2_candidates = list(dict.fromkeys(lvl2_candidates))[:12]
-                fetched_lvl2 = _fetch_many(session, lvl2_candidates, req_timeout)
-
-                for origin_url, status_code, final_url, text in fetched_lvl2:
-                    if time.monotonic() > deadline or (pec_all or mail_all):
-                        break
-                    if not status_code or not text:
-                        continue
-                    visited_level1.add(origin_url)
-                    pages_visited.append(final_url)
-                    is_pl2 = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
-                    _harvest(text, url_is_pl=is_pl2, page_url=final_url)
-                    if pec_all or mail_all:
-                        break
-
-                    if is_pl2:
-                        sub2 = BeautifulSoup(text, "html.parser")
-                        lvl3 = _candidate_links(sub2, base, page_is_pl=True)
-                        lvl3_targets = [u3 for u3, s3 in lvl3 if s3 >= 2 and u3 not in visited_level1][:6]
-                        for u3 in lvl3_targets:
-                            if time.monotonic() > deadline or (pec_all or mail_all):
-                                break
-                            visited_level1.add(u3)
-                            try:
-                                rr3 = session.get(u3, timeout=req_timeout, allow_redirects=True)
-                                if rr3.status_code != 200:
-                                    continue
-                                pages_visited.append(rr3.url)
-                                _harvest(rr3.text, url_is_pl=True, page_url=rr3.url)
-                                if pec_all or mail_all:
-                                    break
-                            except Exception:
-                                continue
-
-                        if not (pec_all or mail_all) and pdf_extract:
-                            from .pdf_extractor import (
-                                extract_emails_from_pdf_url,
-                                find_pdf_links,
+                fetched_pages = 0
+                while frontier and fetched_pages < 28 and time.monotonic() <= deadline and not (pec_all or mail_all):
+                    frontier.sort(key=lambda item: (-item[0], item[1]))
+                    batch = [url for _score, url in frontier[: min(6, len(frontier))]]
+                    frontier = frontier[min(6, len(frontier)):]
+                    fetched = _fetch_many(session, batch, req_timeout)
+                    new_soup_pages: list[tuple[str, str, bool]] = []
+                    for origin_url, status_code, final_url, text in fetched:
+                        if time.monotonic() > deadline or (pec_all or mail_all):
+                            break
+                        if not status_code or not text:
+                            continue
+                        fetched_pages += 1
+                        pages_visited.append(final_url)
+                        is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
+                        _harvest(text, url_is_pl=is_pl, page_url=final_url)
+                        new_soup_pages.append((final_url, text, is_pl))
+                        if is_pl:
+                            _maybe_extract_pdfs(
+                                session=session,
+                                page_html=text,
+                                page_url=final_url,
+                                base=base,
+                                deadline=deadline,
+                                req_timeout=req_timeout,
+                                strict_pl_local=strict_pl_local,
+                                pdf_extract=pdf_extract,
+                                accept_email=_accept_email,
+                                pec_all=pec_all,
+                                mail_all=mail_all,
                             )
-
-                            pdfs = find_pdf_links(text, base, limit=5)
-                            for pdf_url in pdfs:
-                                if time.monotonic() > deadline or (pec_all or mail_all):
-                                    break
-                                pairs = extract_emails_from_pdf_url(session, pdf_url, timeout=6)
-                                for em, ctx in pairs:
-                                    _accept_email(em, ctx, text, True, "pdf")
+                    for page_url, text, is_pl in new_soup_pages:
+                        if time.monotonic() > deadline or (pec_all or mail_all):
+                            break
+                        soup2 = BeautifulSoup(text, "html.parser")
+                        _enqueue_candidate_pages(frontier, soup2, base, is_pl, seen_frontier, min_score=2 if is_pl else 1, limit=40)
             except Exception:
                 pass
 
         # 4) Fallback largo: siti molto diversi o browser bloccato.
         if not (pec_all or mail_all):
             try:
-                r = session.get(site, timeout=req_timeout)
-                soup = BeautifulSoup(r.text, "html.parser")
+                soup = BeautifulSoup(home_html or "", "html.parser") if home_html else BeautifulSoup("", "html.parser")
+                if not home_html:
+                    r = session.get(site, timeout=req_timeout)
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    home_html = r.text
+                    home_url = r.url
                 broad_candidates = _broad_candidate_links(soup, base, limit=max(4, int(max_candidates) * 2), page_is_pl=True)
                 fetched_broad = _fetch_many(session, broad_candidates, req_timeout)
                 for origin_url, status_code, final_url, text in fetched_broad:
@@ -972,6 +1000,20 @@ def scrape_polizia_locale(
                     pages_visited.append(final_url)
                     is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
                     _harvest(text, url_is_pl=is_pl, page_url=final_url)
+                    if is_pl and pdf_extract and not (pec_all or mail_all):
+                        _maybe_extract_pdfs(
+                            session=session,
+                            page_html=text,
+                            page_url=final_url,
+                            base=base,
+                            deadline=deadline,
+                            req_timeout=req_timeout,
+                            strict_pl_local=strict_pl_local,
+                            pdf_extract=pdf_extract,
+                            accept_email=_accept_email,
+                            pec_all=pec_all,
+                            mail_all=mail_all,
+                        )
                     if pec_all or mail_all:
                         break
             except Exception:

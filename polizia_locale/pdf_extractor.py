@@ -108,3 +108,38 @@ def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def find_pdf_links_broad(html: str, base: str, limit: int = 10) -> list[str]:
+    """Estrae un set più ampio di PDF, utile sulle pagine PL o sui nodi già sospetti."""
+    from urllib.parse import urljoin
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    scored: list[tuple[str, int]] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = (a.get_text() or "").lower()
+        if not href.lower().endswith(".pdf") and ".pdf" not in href.lower():
+            continue
+        absu = urljoin(base, href)
+        if not absu.startswith("http"):
+            continue
+        hay = f"{text} {href.lower()}"
+        if any(k in hay for k in ("polizia", "vigili", "comando", "municipale")):
+            score = 5
+        elif any(k in hay for k in ("contatti", "organigramma", "uffici", "rubrica", "elenco", "responsabili", "telefoni", "directory")):
+            score = 3
+        else:
+            score = 1
+        scored.append((absu, score))
+    seen: set[str] = set()
+    out: list[str] = []
+    for url, _score in sorted(scored, key=lambda x: -x[1]):
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
