@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from polizia_locale.cli import _normalize_output_mail
 from polizia_locale.confidence import apply_confidence
 from polizia_locale.normalization import (
   canonical_commune_name,
@@ -97,3 +98,27 @@ def test_poliziamunicipale_finder_matches_bilingual_commune_name(monkeypatch):
 
     assert detail_url.endswith("/scheda/bolzano")
     finder.close()
+
+
+def test_normalize_output_mail_keeps_generic_addresses_in_pl_context():
+  row = {
+    "email": "info@comune.example.it | polizialocale@comune.example.it",
+    "fonte": "ScrapingSitoComune",
+    "matched_by": "context_polizia | source:ScrapingSitoComune",
+    "descrizione_uo": "Comando Polizia Locale",
+  }
+
+  assert _normalize_output_mail(row) == (
+    "info@comune.example.it | polizialocale@comune.example.it"
+  )
+
+
+def test_normalize_output_mail_strips_generic_addresses_without_context():
+  row = {
+    "email": "info@comune.example.it | polizialocale@comune.example.it",
+    "fonte": "NON TROVATO",
+    "matched_by": "",
+    "descrizione_uo": "",
+  }
+
+  assert _normalize_output_mail(row) == "polizialocale@comune.example.it"

@@ -759,9 +759,11 @@ def scrape_polizia_locale(
             "postmaster",
         }
         if strict_pl_local:
-            if not is_pl_local and local in generic_local_parts:
+            if not is_pl_local and local in generic_local_parts and not (
+                page_is_polizia or is_pl_ctx or ctx_score >= 4
+            ):
                 return
-            if not (is_pl_local or page_is_polizia or ctx_score >= 5):
+            if not (is_pl_local or page_is_polizia or is_pl_ctx or ctx_score >= 4):
                 return
             if is_likely_personal_email(email) and not (is_pl_local or page_is_polizia or ctx_score >= 5):
                 return

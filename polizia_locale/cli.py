@@ -47,6 +47,75 @@ def _load_env() -> None:
 _load_env()
 
 
+def _has_strong_pl_context(row: dict) -> bool:
+    hay = " ".join(
+        str(row.get(field, ""))
+        for field in ("fonte", "matched_by", "descrizione_uo", "denominazione_ente")
+    ).lower()
+    return any(
+        token in hay
+        for token in (
+            "source:indicepa",
+            "source:indicepa-comune",
+            "source:scrapingsitocomune",
+            "source:webscraping",
+            "source:websearch",
+            "context_polizia",
+            "dom_parent_pl",
+            "dom_heading_pl",
+            "site_match",
+            "polizia locale",
+            "polizia municipale",
+            "vigili urbani",
+            "comando",
+        )
+    )
+
+
+def _normalize_output_mail(row: dict) -> str:
+    raw_mail = (row.get("email") or "").strip()
+    if not raw_mail:
+        return ""
+
+    parts = [p.strip() for p in raw_mail.replace(";", "|").split("|") if p.strip()]
+    if not parts:
+        return ""
+
+    if _has_strong_pl_context(row):
+        return " | ".join(sorted(set(parts)))
+
+    kept: list[str] = []
+    generic_local_parts = (
+        "info",
+        "segreteria",
+        "protocollo",
+        "ufficio",
+        "amministrazione",
+        "contatti",
+        "contact",
+        "help",
+        "service",
+        "webmaster",
+        "noreply",
+        "postmaster",
+    )
+    for email in parts:
+        if is_pl_specific_email(email):
+            kept.append(email)
+            continue
+        local = email.split("@", 1)[0].lower() if "@" in email else email.lower()
+        if any(
+            local == g
+            or local.startswith(g + ".")
+            or local.startswith(g + "_")
+            or local.startswith(g + "-")
+            for g in generic_local_parts
+        ):
+            continue
+        kept.append(email)
+    return " | ".join(sorted(set(kept)))
+
+
 BANNER = r"""
 ============================================================
   POLIZIA LOCALE / MUNICIPALE - PEC & MAIL FINDER
@@ -702,20 +771,6 @@ def _run(region_code: str, region_name: str, args) -> int:
             )
 
     def _group_shared_contacts(input_rows: list[dict]) -> list[dict]:
-        GENERIC_LOCAL_PARTS = (
-            "info",
-            "segreteria",
-            "protocollo",
-            "ufficio",
-            "amministrazione",
-            "contatti",
-            "contact",
-            "help",
-            "service",
-            "webmaster",
-            "noreply",
-            "postmaster",
-        )
         grouped: dict[tuple[str, str], dict] = {}
         order: list[tuple[str, str]] = []
         passthrough: list[dict] = []
@@ -731,22 +786,9 @@ def _run(region_code: str, region_name: str, args) -> int:
 
         for row in input_rows:
             pec = (row.get("pec") or "").strip()
-            mail = (row.get("email") or "").strip()
-            # rimuovi indirizzi con local-part generiche se non sono PL-specifiche
-            if mail:
-                parts = [p.strip() for p in mail.replace(";", "|").split("|") if p.strip()]
-                kept: list[str] = []
-                for e in parts:
-                    if is_pl_specific_email(e):
-                        kept.append(e)
-                        continue
-                    local = e.split("@", 1)[0].lower() if "@" in e else e.lower()
-                    if any(local == g or local.startswith(g + ".") or local.startswith(g + "_") or local.startswith(g + "-") for g in GENERIC_LOCAL_PARTS):
-                        # scarta generic local-part
-                        continue
-                    kept.append(e)
-                mail = " | ".join(sorted(set(kept)))
-            # Propaga il valore normalizzato così l'output non conserva mail generiche.
+            mail = _normalize_output_mail(row)
+            # Propaga il valore normalizzato senza perdere mail utili quando il
+            # contesto è già chiaramente della Polizia Locale.
             row["email"] = mail
             if not pec and not mail:
                 passthrough.append(row)
