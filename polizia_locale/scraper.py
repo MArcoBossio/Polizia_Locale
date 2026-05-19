@@ -498,22 +498,12 @@ def scrape_polizia_locale(
     pec_all: set[str] = set()
     mail_all: set[str] = set()
 
-    def _email_on_official_domain(email: str) -> bool:
-        if "@" not in email:
-            return False
-        domain = email.split("@", 1)[1].lower().strip()
-        return bool(
-            domain == host
-            or domain.endswith("." + host)
-            or host.endswith("." + domain)
-        )
-
     def _harvest(html: str, url_is_pl: bool, page_url: str = ""):
         found_before = bool(pec_all or mail_all)
         if strict_pl_local:
             for m in EMAIL_RE.finditer(html):
                 e = m.group(0)
-                if is_pl_specific_email(e) or (url_is_pl and _email_on_official_domain(e)):
+                if is_pl_specific_email(e):
                     if _is_pec(e, html[max(0, m.start()-80):m.end()+80]):
                         pec_all.add(e)
                     else:
@@ -533,7 +523,7 @@ def scrape_polizia_locale(
                     if strict_pl_local:
                         for m in EMAIL_RE.finditer(rendered_text):
                             e = m.group(0)
-                            if is_pl_specific_email(e) or _email_on_official_domain(e):
+                            if is_pl_specific_email(e):
                                 if _is_pec(e, rendered_text[max(0, m.start()-80):m.end()+80]):
                                     pec_all.add(e)
                                 else:
@@ -550,7 +540,7 @@ def scrape_polizia_locale(
                         if strict_pl_local:
                             for m in EMAIL_RE.finditer(ocr_text):
                                 e = m.group(0)
-                                if is_pl_specific_email(e) or _email_on_official_domain(e):
+                                if is_pl_specific_email(e):
                                     if _is_pec(e, ocr_text[max(0, m.start()-80):m.end()+80]):
                                         pec_all.add(e)
                                     else:

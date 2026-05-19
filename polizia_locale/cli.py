@@ -363,48 +363,89 @@ def _run(region_code: str, region_name: str, args) -> int:
             except Exception:
                 return set(), set()
         if args.web_search and still_missing:
-            print(f"      Ricerca web (Playwright + Chromium) per {len(still_missing)} comuni residui...")
+            print(f"      Ricerca web per {len(still_missing)} comuni residui...")
+            # Se è presente la chiave BRAVE_API_KEY, usiamo Brave Search API (più veloce)
             try:
-                from .web_search import WebSearchFinder
-                finder = WebSearchFinder()
-                finder.start()
-                try:
-                    web_workers = min(args.workers, 4)
+                web_workers = min(args.workers, 4)
 
-                    def _web_one(c):
-                        site = site_by_istat.get(c.codice_istat, "")
-                        from urllib.parse import urlparse
+                if os.environ.get("BRAVE_API_KEY"):
+                    from .brave_search import BraveSearchFinder
 
-                        host = ""
-                        if site:
-                            u = site if site.startswith("http") else "https://" + site
-                            host = urlparse(u).netloc.lstrip("www.")
-                        try:
-                            pec, mail = finder.search_polizia_locale(
-                                c.nome,
-                                c.provincia,
-                                domain_hint=host,
-                                extra_queries=args.extra_query or None,
-                                strict_pl_local=args.strict,
-                            )
-                            pec, mail = _accept_verified_web_result(c, pec, mail)
-                            return c, (pec, mail)
-                        except Exception:
-                            return c, (set(), set())
+                    finder = BraveSearchFinder()
+                    try:
+                        def _web_one(c):
+                            site = site_by_istat.get(c.codice_istat, "")
+                            from urllib.parse import urlparse
 
-                    with ThreadPoolExecutor(max_workers=web_workers) as pool:
-                        futures = [pool.submit(_web_one, c) for c in still_missing]
-                        for fut in tqdm(
-                            as_completed(futures),
-                            total=len(futures),
-                            desc="Web search",
-                            unit="comune",
-                        ):
-                            c, (pec, mail) = fut.result()
-                            if pec or mail:
-                                web_results[c.codice_istat] = (pec, mail)
-                finally:
-                    finder.stop()
+                            host = ""
+                            if site:
+                                u = site if site.startswith("http") else "https://" + site
+                                host = urlparse(u).netloc.lstrip("www.")
+                            try:
+                                pec, mail, _sources = finder.search_polizia_locale(
+                                    c.nome,
+                                    c.provincia,
+                                    domain_hint=host,
+                                    extra_queries=args.extra_query or None,
+                                    strict_pl_local=args.strict,
+                                )
+                                pec, mail = _accept_verified_web_result(c, pec, mail)
+                                return c, (pec, mail)
+                            except Exception:
+                                return c, (set(), set())
+
+                        with ThreadPoolExecutor(max_workers=web_workers) as pool:
+                            futures = [pool.submit(_web_one, c) for c in still_missing]
+                            for fut in tqdm(
+                                as_completed(futures),
+                                total=len(futures),
+                                desc="Web search",
+                                unit="comune",
+                            ):
+                                c, (pec, mail) = fut.result()
+                                if pec or mail:
+                                    web_results[c.codice_istat] = (pec, mail)
+                    finally:
+                        finder.close()
+                else:
+                    from .web_search import WebSearchFinder
+                    finder = WebSearchFinder()
+                    finder.start()
+                    try:
+                        def _web_one(c):
+                            site = site_by_istat.get(c.codice_istat, "")
+                            from urllib.parse import urlparse
+
+                            host = ""
+                            if site:
+                                u = site if site.startswith("http") else "https://" + site
+                                host = urlparse(u).netloc.lstrip("www.")
+                            try:
+                                pec, mail = finder.search_polizia_locale(
+                                    c.nome,
+                                    c.provincia,
+                                    domain_hint=host,
+                                    extra_queries=args.extra_query or None,
+                                    strict_pl_local=args.strict,
+                                )
+                                pec, mail = _accept_verified_web_result(c, pec, mail)
+                                return c, (pec, mail)
+                            except Exception:
+                                return c, (set(), set())
+
+                        with ThreadPoolExecutor(max_workers=web_workers) as pool:
+                            futures = [pool.submit(_web_one, c) for c in still_missing]
+                            for fut in tqdm(
+                                as_completed(futures),
+                                total=len(futures),
+                                desc="Web search",
+                                unit="comune",
+                            ):
+                                c, (pec, mail) = fut.result()
+                                if pec or mail:
+                                    web_results[c.codice_istat] = (pec, mail)
+                    finally:
+                        finder.stop()
             except Exception as e:
                 print(f"      Avviso: ricerca web non disponibile ({e})")
 
@@ -697,6 +738,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                         continue
                     kept.append(e)
                 mail = " | ".join(sorted(set(kept)))
+            # Propaga il valore normalizzato così l'output non conserva mail generiche.
+            row["email"] = mail
             if not pec and not mail:
                 passthrough.append(row)
                 continue

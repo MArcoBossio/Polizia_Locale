@@ -76,6 +76,25 @@ Se il file `.env` contiene `BRAVE_API_KEY`, lo script userà automaticamente
 Brave Search per il livello 6 (molto più veloce). In assenza della chiave
 cade su Playwright+Bing.
 
+### Brave Search API (opzionale, raccomandata)
+
+Se hai una chiave per la Brave Search API lo script la userà automaticamente
+per eseguire le ricerche web (più veloce e meno dipendente da un browser
+headless). Note utili:
+
+- Key: impostala in `.env` o come variabile d'ambiente `BRAVE_API_KEY`.
+- Rate limit free tier: ~1 query/sec; il client applica throttling automatico.
+- Free quota: ~2.000 query/mese (controlla il tuo piano su Brave).
+
+Esempio `.env` (non committare chiavi reali):
+
+```
+BRAVE_API_KEY=tuo_token_brave
+```
+
+Se la variabile è assente lo script continuerà a funzionare utilizzando
+Playwright+Bing (se installato), con comportamento invariato.
+
 ## Utilizzo
 
 Tre modalità:

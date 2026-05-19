@@ -114,3 +114,56 @@ def test_scrape_polizia_locale_falls_back_on_broad_links(monkeypatch):
     assert result.pagina == assistance
     assert homepage in fake_session.calls
     assert assistance in fake_session.calls
+
+
+def test_scrape_polizia_locale_strict_skips_info_and_keeps_searching(monkeypatch):
+    base = "https://www.example.com"
+    page_generic = f"{base}/polizia-locale"
+    page_specific = f"{base}/comando-polizia-locale"
+
+    fake_session = _FakeSession(
+        {
+            page_generic: SimpleNamespace(
+                status_code=200,
+                text=(
+                    "<html><body>"
+                    "<h1>Polizia Locale</h1>"
+                    "<p>Contatti: info@comune.example.com</p>"
+                    "</body></html>"
+                ),
+                url=page_generic,
+            ),
+            page_specific: SimpleNamespace(
+                status_code=200,
+                text=(
+                    "<html><body>"
+                    "<h1>Comando di Polizia Locale</h1>"
+                    "<p>Email: polizia.locale@comune.example.com</p>"
+                    "</body></html>"
+                ),
+                url=page_specific,
+            ),
+        }
+    )
+
+    monkeypatch.setattr(scraper, "_new_session", lambda: fake_session)
+    monkeypatch.setattr(scraper, "find_comune_website", lambda *args, **kwargs: base)
+    monkeypatch.setattr(scraper, "_browser_rendered_text", lambda *args, **kwargs: "")
+    monkeypatch.setattr(scraper, "_ocr_page_screenshot", lambda *args, **kwargs: "")
+    monkeypatch.setattr(scraper, "_DIRECT_PATH_HINTS", ("/polizia-locale", "/comando-polizia-locale"))
+
+    result = scraper.scrape_polizia_locale(
+        "Esempio",
+        "Trento",
+        "000001",
+        site_hint=base,
+        timeout=5,
+        total_budget=10,
+        strict_pl_local=True,
+        pdf_extract=False,
+    )
+
+    assert result is not None
+    assert result.email == "polizia.locale@comune.example.com"
+    assert page_generic in fake_session.calls
+    assert page_specific in fake_session.calls
