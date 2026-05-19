@@ -45,6 +45,22 @@ def extract_emails_from_pdf_url(
     except Exception:
         return []
 
+    if len(text.strip()) < 40:
+        try:
+            from pdf2image import convert_from_bytes
+            import pytesseract
+
+            ocr_chunks: list[str] = []
+            for image in convert_from_bytes(content, first_page=1, last_page=4):
+                try:
+                    ocr_chunks.append(pytesseract.image_to_string(image, lang="ita"))
+                except Exception:
+                    continue
+            if ocr_chunks:
+                text = text + " \n " + " \n ".join(ocr_chunks)
+        except Exception:
+            pass
+
     out: list[tuple[str, str]] = []
     for m in EMAIL_RE.finditer(text):
         start = max(0, m.start() - 80)
@@ -71,23 +87,15 @@ def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:
         if not absu.startswith("http"):
             continue
         hay = (text + " " + href.lower())
-        if any(
-            k in hay
-            for k in [
-                "polizia local",
-                "polizia municipal",
-                "polizia-local",
-                "polizia-municipal",
-                "vigili urbani",
-                "vigili-urbani",
-                "comando polizia",
-                "comando-polizia",
-                "contatti",
-                "organigramma",
-                "uffici",
-            ]
-        ):
-            score = 2 if "polizia" in hay or "vigili" in hay else 1
+        if any(k in hay for k in ["polizia local", "polizia municipal", "polizia-local", "polizia-municipal", "vigili urbani", "vigili-urbani", "comando polizia", "comando-polizia"]):
+            score = 4
+        elif any(k in hay for k in ["contatti", "organigramma", "uffici", "rubrica", "directory", "elenco", "responsabili", "telefoni"]):
+            score = 2
+        elif text or href.lower().endswith(".pdf"):
+            score = 1
+        else:
+            score = 0
+        if score:
             scored.append((absu, score))
     # ordina e dedup
     seen: set[str] = set()

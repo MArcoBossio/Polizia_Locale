@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .indicepa import is_pl_specific_email
+from .normalization import canonical_commune_name, is_close_match
 from .scraper import EMAIL_RE, _is_pec
 from .utils import is_likely_personal_email
 
@@ -18,9 +19,7 @@ BASE_URL = "https://www.poliziamunicipale.it"
 
 
 def _norm(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
+    return canonical_commune_name(s)
 
 
 class PoliziaMunicipaleFinder:
@@ -86,7 +85,7 @@ class PoliziaMunicipaleFinder:
             city = _norm(cells[1].get_text(" ", strip=True))
             prov = _norm(cells[2].get_text(" ", strip=True))
 
-            if city != target_comune:
+            if not is_close_match(city, target_comune, threshold=0.9):
                 continue
             # match morbido provincia ("Bolzano" vs "Bolzano/Bozen")
             if target_prov and target_prov not in prov and prov not in target_prov:

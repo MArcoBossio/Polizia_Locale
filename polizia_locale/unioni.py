@@ -16,13 +16,13 @@ Il chiamante può così replicare la PEC su tutti i membri.
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 from bs4 import BeautifulSoup
 
+from .normalization import canonical_commune_name, commune_variants
 from .indicepa import (
     _is_polizia_locale,
     _extract_mails,
@@ -52,11 +52,7 @@ class UnionePLRecord:
 
 
 def _strip(s: str) -> str:
-    if not isinstance(s, str):
-        return ""
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    return s.lower().strip()
+    return canonical_commune_name(s)
 
 
 def find_unioni_with_polizia_locale(region_code: str | None = None) -> list[UnionePLRecord]:
@@ -264,9 +260,9 @@ def match_member_comuni(page_text: str, comuni: list) -> list:
         name_n = _strip(c.nome)
         if len(name_n) < 3:
             continue
-        # boundary di parola (semplificato: spazio o inizio/fine + char non alfa)
         pattern = r"(?<![a-z0-9])" + re.escape(name_n) + r"(?![a-z0-9])"
-        if re.search(pattern, text_n):
+        variants = commune_variants(c.nome)
+        if re.search(pattern, text_n) or any(variant in text_n for variant in variants):
             out.append(c)
             seen.add(c.codice_istat)
     return out

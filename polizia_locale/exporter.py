@@ -15,6 +15,8 @@ FIELDS = [
     "sigla_provincia",
     "mail",
     "pec",
+    "confidence",
+    "matched_by",
 ]
 
 
@@ -30,6 +32,8 @@ def _normalize_rows(rows: list[dict]) -> list[dict]:
                 "sigla_provincia": r.get("sigla_provincia", r.get("sigla", "")),
                 "mail": r.get("email", r.get("mail", "")),
                 "pec": r.get("pec", ""),
+                "confidence": r.get("confidence", ""),
+                "matched_by": r.get("matched_by", ""),
             }
         )
     return out

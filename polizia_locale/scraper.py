@@ -12,11 +12,13 @@ Strategia:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
+import unicodedata
 
 import requests
 from bs4 import BeautifulSoup
@@ -40,6 +42,37 @@ PEC_DOMAIN_HINTS = (
     "cert.",
 )
 
+PL_HINTS = (
+    "polizia locale",
+    "polizia municipale",
+    "polizia urbana",
+    "vigili urbani",
+    "comando",
+    "corpo di polizia",
+    "ortspolizei",
+    "gemeindepolizei",
+    "polizeiamt",
+)
+
+NEGATIVE_HINTS = (
+    "ragioneria",
+    "tributi",
+    "anagrafe",
+    "urp",
+    "protocollo",
+    "segreteria",
+    "personale",
+    "finanzi",
+)
+
+
+def _normalize_match_text(text: str) -> str:
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFD", text.lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", text).strip()
+
 
 def _is_pec(email: str, context: str = "") -> bool:
     e = email.lower()
@@ -58,6 +91,8 @@ class ScrapeResult:
     email: str
     sito: str
     pagina: str
+    confidence: float = 0.0
+    matched_by: str = ""
     fonte: str = "ScrapingSitoComune"
 
     def as_dict(self) -> dict:
@@ -76,6 +111,8 @@ class ScrapeResult:
             "fonte": self.fonte,
             "sito": self.sito,
             "pagina": self.pagina,
+            "confidence": round(self.confidence, 3),
+            "matched_by": self.matched_by,
         }
 
 
@@ -88,6 +125,73 @@ def _new_session() -> requests.Session:
         }
     )
     return s
+
+
+async def _aiohttp_fetch_many(
+    urls: list[str],
+    timeout: tuple[int, int],
+    headers: dict[str, str],
+) -> list[tuple[str, int, str, str]]:
+    try:
+        aiohttp = __import__("aiohttp")
+    except Exception:
+        return []
+
+    if not urls:
+        return []
+
+    client_timeout = aiohttp.ClientTimeout(
+        total=max(timeout[1] * 2, timeout[0] + timeout[1] + 2),
+        connect=timeout[0],
+        sock_connect=timeout[0],
+        sock_read=timeout[1],
+    )
+    connector = aiohttp.TCPConnector(limit=min(8, max(1, len(urls))))
+
+    async def _fetch_one(session, url: str) -> tuple[str, int, str, str]:
+        try:
+            async with session.get(url, allow_redirects=True) as resp:
+                text = await resp.text(errors="ignore")
+                return url, resp.status, str(resp.url), text
+        except Exception:
+            return url, 0, url, ""
+
+    async with aiohttp.ClientSession(
+        headers=headers,
+        timeout=client_timeout,
+        connector=connector,
+    ) as session:
+        return await asyncio.gather(*(_fetch_one(session, url) for url in urls))
+
+
+def _fetch_many(
+    session: requests.Session,
+    urls: list[str],
+    timeout: tuple[int, int],
+) -> list[tuple[str, int, str, str]]:
+    if not urls:
+        return []
+    if session.__class__.__module__ != requests.Session.__module__:
+        out: list[tuple[str, int, str, str]] = []
+        for url in urls:
+            try:
+                rr = session.get(url, timeout=timeout, allow_redirects=True)
+                out.append((url, rr.status_code, rr.url, rr.text))
+            except Exception:
+                out.append((url, 0, url, ""))
+        return out
+    headers = dict(session.headers)
+    try:
+        return asyncio.run(_aiohttp_fetch_many(urls, timeout, headers))
+    except Exception:
+        out: list[tuple[str, int, str, str]] = []
+        for url in urls:
+            try:
+                rr = session.get(url, timeout=timeout, allow_redirects=True)
+                out.append((url, rr.status_code, rr.url, rr.text))
+            except Exception:
+                out.append((url, 0, url, ""))
+        return out
 
 
 def duckduckgo_first_result(session: requests.Session, query: str) -> str:
@@ -128,7 +232,7 @@ def find_comune_website(session: requests.Session, comune: str, provincia: str) 
     return url
 
 
-def _candidate_links(soup: BeautifulSoup, base: str) -> list[tuple[str, int]]:
+def _candidate_links(soup: BeautifulSoup, base: str, page_is_pl: bool = False) -> list[tuple[str, int]]:
     """Estrae i link interni candidati con un punteggio di priorità.
 
     Score più alto = più specifico per la Polizia Locale.
@@ -167,6 +271,11 @@ def _candidate_links(soup: BeautifulSoup, base: str) -> list[tuple[str, int]]:
             score = 2
         elif any(k in hay for k in ["uffici", "amministrazione/uffici", "amministrazione", "punto_contatto", "contatti"]):
             score = 1
+        if score == 0 and page_is_pl:
+            if any(k in hay for k in ["node/", "/uffici", "/servizi", "/amministrazione", "/contatti"]):
+                score = 1
+            elif text:
+                score = 1
         if score == 0:
             continue
         absu = urljoin(base, href)
@@ -190,7 +299,7 @@ def _candidate_links(soup: BeautifulSoup, base: str) -> list[tuple[str, int]]:
     return out
 
 
-def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8) -> list[str]:
+def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8, page_is_pl: bool = False) -> list[str]:
     """Fallback più largo per siti con struttura molto diversa.
 
     Quando i path espliciti della PL non esistono, proviamo anche link meno
@@ -212,6 +321,8 @@ def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8) -> li
             score = 2
         elif any(k in hay for k in ("news", "avvisi", "trasparenza", "redazione", "faq")):
             score = 1
+        if score == 0 and page_is_pl:
+            score = 1 if text or href else 0
         if score == 0:
             continue
         absu = urljoin(base, href)
@@ -243,6 +354,46 @@ def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
         ctx = html[start:end]
         out.append((m.group(0), ctx))
     return out
+
+
+def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    norm_ctx = _normalize_match_text(ctx)
+    if any(h in norm_ctx for h in PL_HINTS):
+        score += 2
+        reasons.append("context_polizia")
+    if any(h in norm_ctx for h in NEGATIVE_HINTS):
+        score -= 2
+        reasons.append("context_non_pl")
+    local = email.split("@", 1)[0].lower()
+    if any(k in local for k in ("polizialocale", "poliziamunicipale", "vigili", "comandopm", "comandopl", "pol.locale", "pol.municipale")):
+        score += 3
+        reasons.append("local_part_pl")
+    if _is_pec(email, ctx):
+        score += 1
+        reasons.append("pec_hint")
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        nodes = soup.find_all(string=lambda s: isinstance(s, str) and email.lower() in s.lower())
+        for node in nodes[:3]:
+            parent = getattr(node, "parent", None)
+            if not parent:
+                continue
+            parent_text = _normalize_match_text(parent.get_text(" ", strip=True))
+            if any(h in parent_text for h in PL_HINTS):
+                score += 2
+                reasons.append("dom_parent_pl")
+            prev_headings = parent.find_all_previous(["h1", "h2", "h3", "h4", "strong", "label"], limit=4)
+            heading_text = _normalize_match_text(" ".join(tag.get_text(" ", strip=True) for tag in prev_headings))
+            if any(h in heading_text for h in PL_HINTS):
+                score += 1
+                reasons.append("dom_heading_pl")
+                break
+    except Exception:
+        pass
+    return score, reasons
 
 
 def _ocr_page_screenshot(url: str, timeout_ms: int = 15000) -> str:
@@ -297,6 +448,7 @@ def _browser_rendered_text(url: str, timeout_ms: int = 15000) -> str:
     """
     try:
         from playwright.sync_api import sync_playwright
+        from PIL import Image
     except Exception:
         return ""
 
@@ -361,6 +513,7 @@ def _filter_polizia_emails(
         local = email.split("@")[0].lower()
         domain = email.split("@", 1)[1].lower() if "@" in email else ""
         ctx_l = ctx.lower()
+        ctx_score, _reasons = _score_email_context(ctx, email, ctx)
         is_pl_local = any(
             k in local
             for k in [
@@ -388,10 +541,10 @@ def _filter_polizia_emails(
                 "polizia urbana",
             ]
         )
-        if not (page_is_polizia or is_pl_local or is_pl_ctx):
+        if not (page_is_polizia or is_pl_local or is_pl_ctx or ctx_score >= 2):
             continue
         # escludi indirizzi personali e provider gratuiti se non chiaramente PL
-        if is_likely_personal_email(email) and not (page_is_polizia or is_pl_local or is_pl_ctx):
+        if is_likely_personal_email(email) and not (page_is_polizia or is_pl_local or is_pl_ctx or ctx_score >= 3):
             continue
         # escludi noreply, info generiche solo se il contesto non è chiaro
         if local in {"noreply", "no-reply", "webmaster", "postmaster"}:
@@ -522,35 +675,57 @@ def scrape_polizia_locale(
     pages_visited: list[str] = []
     pec_all: set[str] = set()
     mail_all: set[str] = set()
+    matched_by: set[str] = set()
+
+    def _note(kind: str) -> None:
+        matched_by.add(kind)
+
+    def _accept_email(email: str, ctx: str, html: str, page_is_polizia: bool, source_kind: str) -> None:
+        ctx_score, reasons = _score_email_context(html, email, ctx)
+        local = email.split("@")[0].lower()
+        is_pl_local = is_pl_specific_email(email)
+        is_pl_ctx = any(k in _normalize_match_text(ctx) for k in PL_HINTS)
+        generic_local_parts = {
+            "info",
+            "segreteria",
+            "protocollo",
+            "ufficio",
+            "amministrazione",
+            "contatti",
+            "contact",
+            "help",
+            "service",
+            "webmaster",
+            "noreply",
+            "postmaster",
+        }
+        if strict_pl_local:
+            if not is_pl_local and local in generic_local_parts:
+                return
+            if not (is_pl_local or page_is_polizia or ctx_score >= 5):
+                return
+            if is_likely_personal_email(email) and not (is_pl_local or page_is_polizia or ctx_score >= 5):
+                return
+        else:
+            if not (page_is_polizia or is_pl_local or is_pl_ctx or ctx_score >= 2):
+                return
+            if is_likely_personal_email(email) and not (is_pl_local or page_is_polizia or ctx_score >= 4):
+                return
+        if local in {"noreply", "no-reply", "webmaster", "postmaster"}:
+            return
+        if _is_pec(email, ctx):
+            pec_all.add(email)
+        else:
+            mail_all.add(email)
+        for reason in reasons:
+            _note(reason)
+        _note(source_kind)
 
     def _harvest(html: str, url_is_pl: bool, page_url: str = ""):
         found_before = bool(pec_all or mail_all)
-        if strict_pl_local:
-            for m in EMAIL_RE.finditer(html):
-                e = m.group(0)
-                ctx = html[max(0, m.start() - 80): m.end() + 80]
-                if is_pl_specific_email(e):
-                    if _is_pec(e, ctx):
-                        pec_all.add(e)
-                    else:
-                        mail_all.add(e)
-                else:
-                    # allow generic local-parts (info@, segreteria@, ...) when
-                    # the page or nearby context clearly references Polizia Locale
-                    ctx_l = ctx.lower()
-                    if url_is_pl or any(pk in ctx_l for pk in ("polizia", "vigili", "polizialocale", "poliziamunicipale", "comando")):
-                        # avoid free provider/personal emails
-                        if is_likely_personal_email(e):
-                            continue
-                        if _is_pec(e, ctx):
-                            pec_all.add(e)
-                        else:
-                            mail_all.add(e)
-        else:
-            pairs = _extract_emails_with_context(html)
-            p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
-            pec_all.update(p)
-            mail_all.update(ml)
+        pairs = _extract_emails_with_context(html)
+        for e, ctx in pairs:
+            _accept_email(e, ctx, html, url_is_pl, "page_html")
 
         # Fallback: prima il testo renderizzato dal browser, poi lo screenshot OCR.
         if (not found_before) and not (pec_all or mail_all) and page_url:
@@ -558,36 +733,18 @@ def scrape_polizia_locale(
             if url_is_pl or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
                 rendered_text = _browser_rendered_text(page_url)
                 if rendered_text:
-                    if strict_pl_local:
-                        for m in EMAIL_RE.finditer(rendered_text):
-                            e = m.group(0)
-                            if is_pl_specific_email(e):
-                                if _is_pec(e, rendered_text[max(0, m.start()-80):m.end()+80]):
-                                    pec_all.add(e)
-                                else:
-                                    mail_all.add(e)
-                    else:
-                        pairs = _extract_emails_with_context(rendered_text)
-                        p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
-                        pec_all.update(p)
-                        mail_all.update(ml)
+                    for m in EMAIL_RE.finditer(rendered_text):
+                        e = m.group(0)
+                        ctx = rendered_text[max(0, m.start() - 80):m.end() + 80]
+                        _accept_email(e, ctx, rendered_text, url_is_pl, "js_render")
 
                 if not (pec_all or mail_all):
                     ocr_text = _ocr_page_screenshot(page_url)
                     if ocr_text:
-                        if strict_pl_local:
-                            for m in EMAIL_RE.finditer(ocr_text):
-                                e = m.group(0)
-                                if is_pl_specific_email(e):
-                                    if _is_pec(e, ocr_text[max(0, m.start()-80):m.end()+80]):
-                                        pec_all.add(e)
-                                    else:
-                                        mail_all.add(e)
-                        else:
-                            pairs = _extract_emails_with_context(ocr_text)
-                            p, ml = _filter_polizia_emails(pairs, page_is_polizia=url_is_pl)
-                            pec_all.update(p)
-                            mail_all.update(ml)
+                        for m in EMAIL_RE.finditer(ocr_text):
+                            e = m.group(0)
+                            ctx = ocr_text[max(0, m.start() - 80):m.end() + 80]
+                            _accept_email(e, ctx, ocr_text, url_is_pl, "ocr")
 
     try:
         # 0) Se il chiamante ha passato una pagina ufficio specifica, la visitiamo
@@ -721,100 +878,82 @@ def scrape_polizia_locale(
                 _harvest(r.text, url_is_pl=False, page_url=r.url)
 
                 # Livello 1: visita i link più specifici prima
-                candidates = _candidate_links(soup, base)
+                candidates = _candidate_links(soup, base, page_is_pl=False)
                 visited_level1: set[str] = set()
                 # priorità: prima score=3, poi 2, poi 1 (incluso uffici/amm)
                 lvl1_high = [u for u, s in candidates if s == 3][:6]
                 lvl1_med = [u for u, s in candidates if s == 2][:4]
                 lvl1_low = [u for u, s in candidates if s == 1][:6]
                 queue_lvl1 = lvl1_high + lvl1_med + lvl1_low
+                fetched_lvl1 = _fetch_many(session, queue_lvl1, req_timeout)
+                lvl2_candidates: list[str] = []
+                lvl2_html: dict[str, tuple[str, bool]] = {}
 
-                for url in queue_lvl1:
+                for origin_url, status_code, final_url, text in fetched_lvl1:
                     if time.monotonic() > deadline or (pec_all or mail_all):
                         break
-                    if url in visited_level1:
+                    if not status_code or not text:
                         continue
-                    visited_level1.add(url)
-                    try:
-                        rr = session.get(url, timeout=req_timeout, allow_redirects=True)
-                        if rr.status_code != 200:
-                            continue
-                        pages_visited.append(rr.url)
-                        is_pl = _path_is_polizia(rr.url) or _path_is_polizia(url)
-                        _harvest(rr.text, url_is_pl=is_pl, page_url=rr.url)
-                        if pec_all or mail_all:
-                            break
-                        # Livello 2: se la pagina è un indice "uffici" o
-                        # "amministrazione", scendi cercando link a PL
-                        sub_soup = BeautifulSoup(rr.text, "html.parser")
-                        lvl2 = _candidate_links(sub_soup, base)
-                        # ora accettiamo score=3 e score=2 (PL/polizia/vigili/comando)
-                        lvl2_targets = [
-                            u for u, s in lvl2 if s >= 2 and u not in visited_level1
-                        ][:6]
-                        for u2 in lvl2_targets:
+                    visited_level1.add(origin_url)
+                    pages_visited.append(final_url)
+                    is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
+                    _harvest(text, url_is_pl=is_pl, page_url=final_url)
+                    if pec_all or mail_all:
+                        break
+                    sub_soup = BeautifulSoup(text, "html.parser")
+                    lvl2 = _candidate_links(sub_soup, base, page_is_pl=is_pl)
+                    for u2, s2 in lvl2:
+                        if s2 >= 2 and u2 not in visited_level1:
+                            lvl2_candidates.append(u2)
+                    lvl2_html[origin_url] = (text, is_pl)
+
+                lvl2_candidates = list(dict.fromkeys(lvl2_candidates))[:12]
+                fetched_lvl2 = _fetch_many(session, lvl2_candidates, req_timeout)
+
+                for origin_url, status_code, final_url, text in fetched_lvl2:
+                    if time.monotonic() > deadline or (pec_all or mail_all):
+                        break
+                    if not status_code or not text:
+                        continue
+                    visited_level1.add(origin_url)
+                    pages_visited.append(final_url)
+                    is_pl2 = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
+                    _harvest(text, url_is_pl=is_pl2, page_url=final_url)
+                    if pec_all or mail_all:
+                        break
+
+                    if is_pl2:
+                        sub2 = BeautifulSoup(text, "html.parser")
+                        lvl3 = _candidate_links(sub2, base, page_is_pl=True)
+                        lvl3_targets = [u3 for u3, s3 in lvl3 if s3 >= 2 and u3 not in visited_level1][:6]
+                        for u3 in lvl3_targets:
                             if time.monotonic() > deadline or (pec_all or mail_all):
                                 break
-                            visited_level1.add(u2)
+                            visited_level1.add(u3)
                             try:
-                                rr2 = session.get(u2, timeout=req_timeout, allow_redirects=True)
-                                if rr2.status_code != 200:
+                                rr3 = session.get(u3, timeout=req_timeout, allow_redirects=True)
+                                if rr3.status_code != 200:
                                     continue
-                                pages_visited.append(rr2.url)
-                                is_pl2 = _path_is_polizia(rr2.url) or _path_is_polizia(u2)
-                                _harvest(rr2.text, url_is_pl=is_pl2, page_url=rr2.url)
+                                pages_visited.append(rr3.url)
+                                _harvest(rr3.text, url_is_pl=True, page_url=rr3.url)
                                 if pec_all or mail_all:
                                     break
-                                # Livello 3 (solo se la pagina visitata è un indice
-                                # PL "comando/polizia/vigili" → cerca pagine
-                                # dettaglio interne)
-                                if is_pl2:
-                                    sub2 = BeautifulSoup(rr2.text, "html.parser")
-                                    lvl3 = _candidate_links(sub2, base)
-                                    for u3, s3 in lvl3:
-                                        if s3 < 2 or u3 in visited_level1:
-                                            continue
-                                        if time.monotonic() > deadline or (pec_all or mail_all):
-                                            break
-                                        visited_level1.add(u3)
-                                        try:
-                                            rr3 = session.get(u3, timeout=req_timeout, allow_redirects=True)
-                                            if rr3.status_code != 200:
-                                                continue
-                                            pages_visited.append(rr3.url)
-                                            _harvest(rr3.text, url_is_pl=True, page_url=rr3.url)
-                                            if pec_all or mail_all:
-                                                break
-                                        except Exception:
-                                            continue
-                                    # estrazione PDF: se la pagina indice è PL,
-                                    # cerca PDF allegati e estrai mail
-                                    if not (pec_all or mail_all) and pdf_extract:
-                                        from .pdf_extractor import (
-                                            extract_emails_from_pdf_url,
-                                            find_pdf_links,
-                                        )
-                                        from .indicepa import is_pl_specific_email
-                                        pdfs = find_pdf_links(rr2.text, base, limit=3)
-                                        for pdf_url in pdfs:
-                                            if time.monotonic() > deadline or (pec_all or mail_all):
-                                                break
-                                            pairs = extract_emails_from_pdf_url(session, pdf_url, timeout=6)
-                                            for em, ctx in pairs:
-                                                if strict_pl_local:
-                                                    if is_pl_specific_email(em):
-                                                        if _is_pec(em, ctx):
-                                                            pec_all.add(em)
-                                                        else:
-                                                            mail_all.add(em)
-                                                else:
-                                                    p2, m2 = _filter_polizia_emails([(em, ctx)], page_is_polizia=True)
-                                                    pec_all.update(p2)
-                                                    mail_all.update(m2)
                             except Exception:
                                 continue
-                    except Exception:
-                        continue
+
+                        if not (pec_all or mail_all) and pdf_extract:
+                            from .pdf_extractor import (
+                                extract_emails_from_pdf_url,
+                                find_pdf_links,
+                            )
+
+                            pdfs = find_pdf_links(text, base, limit=5)
+                            for pdf_url in pdfs:
+                                if time.monotonic() > deadline or (pec_all or mail_all):
+                                    break
+                                pairs = extract_emails_from_pdf_url(session, pdf_url, timeout=6)
+                                for em, ctx in pairs:
+                                    _accept_email(em, ctx, text, True, "pdf")
             except Exception:
                 pass
 
@@ -823,21 +962,18 @@ def scrape_polizia_locale(
             try:
                 r = session.get(site, timeout=req_timeout)
                 soup = BeautifulSoup(r.text, "html.parser")
-                broad_candidates = _broad_candidate_links(soup, base, limit=max(4, int(max_candidates) * 2))
-                for url in broad_candidates:
+                broad_candidates = _broad_candidate_links(soup, base, limit=max(4, int(max_candidates) * 2), page_is_pl=True)
+                fetched_broad = _fetch_many(session, broad_candidates, req_timeout)
+                for origin_url, status_code, final_url, text in fetched_broad:
                     if time.monotonic() > deadline or (pec_all or mail_all):
                         break
-                    try:
-                        rr = session.get(url, timeout=req_timeout, allow_redirects=True)
-                        if rr.status_code != 200:
-                            continue
-                        pages_visited.append(rr.url)
-                        is_pl = _path_is_polizia(rr.url) or _path_is_polizia(url)
-                        _harvest(rr.text, url_is_pl=is_pl, page_url=rr.url)
-                        if pec_all or mail_all:
-                            break
-                    except Exception:
+                    if not status_code or not text:
                         continue
+                    pages_visited.append(final_url)
+                    is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
+                    _harvest(text, url_is_pl=is_pl, page_url=final_url)
+                    if pec_all or mail_all:
+                        break
             except Exception:
                 pass
     except Exception:
@@ -846,6 +982,15 @@ def scrape_polizia_locale(
 
     if not pec_all and not mail_all:
         return None
+    confidence = 0.45
+    if matched_by:
+        confidence += min(0.35, 0.05 * len(matched_by))
+    if any(_path_is_polizia(p) for p in pages_visited):
+        confidence += 0.1
+    if any(is_pl_specific_email(e) for e in pec_all.union(mail_all)):
+        confidence += 0.1
+    if any(k in " ".join(sorted(matched_by)) for k in ("context_polizia", "dom_parent_pl", "dom_heading_pl")):
+        confidence += 0.05
     return ScrapeResult(
         comune=comune,
         codice_istat=codice_istat,
@@ -853,4 +998,6 @@ def scrape_polizia_locale(
         email=" | ".join(sorted(mail_all)),
         sito=base,
         pagina=pages_visited[-1] if pages_visited else "",
+        confidence=min(confidence, 0.99),
+        matched_by=" | ".join(sorted(matched_by)),
     )

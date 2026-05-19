@@ -31,6 +31,105 @@ from .utils import is_likely_personal_email
 from bs4 import BeautifulSoup
 
 
+_INTERACTION_HINTS = (
+    "contatt",
+    "mostra",
+    "altro",
+    "leggi",
+    "espandi",
+    "uffici",
+    "polizia",
+    "vigili",
+    "comando",
+    "menu",
+    "dettagli",
+    "clicca",
+)
+
+
+async def _aggressive_render_html(page, timeout_ms: int) -> str:
+    """Estrae il testo di una pagina JS-heavy con alcuni tentativi extra.
+
+    Il flusso prova più snapshot: prima il DOM nudo, poi scroll, poi click su
+    controlli comuni (bottoni, summary, role=button) che spesso nascondono i
+    contatti in siti comunali basati su CMS o componenti JS.
+    """
+
+    async def _snapshot(tag: str) -> tuple[str, str, str]:
+        html = ""
+        body_text = ""
+        try:
+            html = await page.content()
+        except Exception:
+            html = ""
+        try:
+            body_text = await page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            body_text = ""
+        return tag, html, body_text
+
+    async def _probe_controls() -> None:
+        selectors = ("button", "summary", "[role='button']", "details > summary")
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+            except Exception:
+                continue
+            for idx in range(min(count, 12)):
+                try:
+                    item = locator.nth(idx)
+                    label = await item.inner_text(timeout=600)
+                except Exception:
+                    continue
+                if not label:
+                    continue
+                low = label.lower()
+                if not any(h in low for h in _INTERACTION_HINTS):
+                    continue
+                try:
+                    await item.click(timeout=800)
+                    await page.wait_for_timeout(200)
+                except Exception:
+                    continue
+
+    snapshots: list[tuple[str, str, str]] = []
+    snapshots.append(await _snapshot("initial"))
+
+    for load_state in ("domcontentloaded", "networkidle"):
+        try:
+            await page.wait_for_load_state(load_state, timeout=timeout_ms)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_timeout(250)
+        except Exception:
+            pass
+        try:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(250)
+            await page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
+        await _probe_controls()
+        snapshots.append(await _snapshot(load_state))
+
+    best_html = ""
+    best_text = ""
+    best_score = -1
+    for _tag, html, body_text in snapshots:
+        combined = f"{html} {body_text}".lower()
+        score = len(body_text) + len(html)
+        if any(token in combined for token in ("@", "polizia", "vigili", "comando", "contatti")):
+            score += 1000
+        if score > best_score:
+            best_score = score
+            best_html = html
+            best_text = body_text
+
+    return f"{best_html} {best_text}".strip()
+
+
 def _ocr_images_from_html(html: str, base_url: str = "") -> str:
     try:
         import pytesseract
@@ -193,13 +292,11 @@ class WebSearchFinder:
         try:
             url = "https://www.bing.com/search?q=" + query.replace(" ", "+") + "&setlang=it"
             await page.goto(url, timeout=self.timeout_ms, wait_until="domcontentloaded")
-            await page.wait_for_timeout(700)
-            html = await page.content()
-            # try OCR on images inside the page
+            html = await _aggressive_render_html(page, self.timeout_ms)
             try:
                 ocr_text = _ocr_images_from_html(html, base_url=url)
                 if ocr_text:
-                    return html + " " + ocr_text
+                    html = html + " " + ocr_text
             except Exception:
                 pass
             return html

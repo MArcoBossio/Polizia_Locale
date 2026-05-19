@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from .comuni import load_comuni
+from .confidence import apply_confidence
 from .exporter import export_all
 from .indicepa import find_polizia_locale_aoo, find_polizia_locale_uo, load_enti_index, is_pl_specific_email
 from .regions import list_regions, resolve_region
@@ -751,12 +752,16 @@ def _run(region_code: str, region_name: str, args) -> int:
                 current["comuni_associati"] = [row.get("comune", "")]
                 current["unioni_associate"] = [row.get("unione", "")]
                 current["fonte_origine"] = [row.get("fonte", "")]
+                current["confidence_values"] = [row.get("confidence", 0)]
+                current["matched_by_values"] = [row.get("matched_by", "")]
                 grouped[key] = current
                 order.append(key)
             else:
                 current.setdefault("comuni_associati", []).append(row.get("comune", ""))
                 current.setdefault("unioni_associate", []).append(row.get("unione", ""))
                 current.setdefault("fonte_origine", []).append(row.get("fonte", ""))
+                current.setdefault("confidence_values", []).append(row.get("confidence", 0))
+                current.setdefault("matched_by_values", []).append(row.get("matched_by", ""))
 
         output_rows: list[dict] = passthrough[:]
         for key in order:
@@ -779,15 +784,32 @@ def _run(region_code: str, region_name: str, args) -> int:
                 if f and f not in fonti_origine:
                     fonti_origine.append(f)
 
+            confidence_values: list[float] = []
+            for value in row.get("confidence_values", []):
+                try:
+                    confidence_values.append(float(value))
+                except Exception:
+                    continue
+
+            matched_by_values: list[str] = []
+            for value in row.get("matched_by_values", []):
+                value = (value or "").strip()
+                if value and value not in matched_by_values:
+                    matched_by_values.append(value)
+
             row["comune"] = comuni_associati[0] if comuni_associati else row.get("comune", "")
             row["comuni_associati"] = " | ".join(comuni_associati)
             row["unione"] = " | ".join(unioni_associate)
             row["fonte"] = " + ".join(fonti_origine)
+            if confidence_values:
+                row["confidence"] = round(max(confidence_values), 3)
+            row["matched_by"] = " | ".join(matched_by_values)
             output_rows.append(row)
 
         return output_rows
 
     rows = _group_shared_contacts(rows)
+    rows = apply_confidence(rows)
 
     # esportazione
     region_slug = (
