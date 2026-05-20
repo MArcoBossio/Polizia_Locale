@@ -377,7 +377,7 @@ def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, lis
         score -= 2
         reasons.append("context_non_pl")
     local = email.split("@", 1)[0].lower()
-    if any(k in local for k in ("polizialocale", "poliziamunicipale", "vigili", "comandopm", "comandopl", "pol.locale", "pol.municipale")):
+    if any(k in local for k in ("polizialocale", "poliziamunicipale", "vigili", "comandopm", "comandopl", "pol.locale", "pol.municipale", "info", "segreteria")):
         score += 3
         reasons.append("local_part_pl")
     if _is_pec(email, ctx):

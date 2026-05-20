@@ -195,8 +195,9 @@ def is_pl_specific_email(email: str) -> bool:
       - comandopm@…, comandopl@…, comando.pm@…, comando-polizia@…
       - pm.<comune>@…, pl.<comune>@…
       - <prefix>pm@…, <prefix>pl@… (es. centraleoperativapm@…, ufficiopm@…)
+      - info@…, segreteria@… (quando indicano la Polizia Locale)
     Rifiuta:
-      - comune.X@postacert…, protocollo@…, segreteria@…, info@…, ecc.
+      - comune.X@postacert…, protocollo@…, ecc.
     """
     if not email or "@" not in email:
         return False
@@ -208,6 +209,9 @@ def is_pl_specific_email(email: str) -> bool:
         return True
     # pattern *.pm / *_pm / *-pm / *pm  (alla fine, anche senza separatore)
     if re.search(r"(?:^|[._\-]?)(?:pm|pl)$", local):
+        return True
+    # accetta info@ e segreteria@ come email di Polizia Locale
+    if local in ("info", "segreteria"):
         return True
     return False
 
