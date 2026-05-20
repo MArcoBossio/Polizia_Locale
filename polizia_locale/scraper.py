@@ -139,21 +139,54 @@ def _dom_context_for_node(node, soup: BeautifulSoup, email: str) -> str:
         source_text = str(node)
     _append_unique(parts, source_text)
 
-    current = getattr(node, "parent", None)
+    # Se il node è dentro un <a href="mailto:...">, raccogli il testo dell'anchor
+    parent = getattr(node, "parent", None)
+    if parent and getattr(parent, "name", None) == "a":
+        _append_unique(parts, parent.get_text(" ", strip=True))
+        for attr in ("aria-label", "title", "data-label"):
+            value = parent.get(attr)
+            if value:
+                _append_unique(parts, str(value))
+
+    # Raccogli sibling precedente e successivo
+    if parent:
+        try:
+            prev_sibling = parent.find_previous_sibling()
+            if prev_sibling:
+                _append_unique(parts, prev_sibling.get_text(" ", strip=True))
+                for heading in prev_sibling.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], limit=2):
+                    _append_unique(parts, heading.get_text(" ", strip=True))
+        except Exception:
+            pass
+        try:
+            next_sibling = parent.find_next_sibling()
+            if next_sibling:
+                _append_unique(parts, next_sibling.get_text(" ", strip=True))
+        except Exception:
+            pass
+
+    # Risali gli ancestor
+    current = parent
     ancestor_count = 0
-    while current is not None and ancestor_count < 4:
+    while current is not None and ancestor_count < 5:
         if getattr(current, "name", None):
             _append_unique(parts, current.get_text(" ", strip=True))
             for attr in ("aria-label", "title", "data-label", "data-title"):
                 value = current.get(attr)
                 if value:
                     _append_unique(parts, str(value))
+            # Heading precedente nel contesto dell'ancestor
             try:
                 headings = current.find_previous(["h1", "h2", "h3", "h4", "h5", "h6"], limit=3)
             except Exception:
                 headings = []
             for heading in headings:
                 _append_unique(parts, heading.get_text(" ", strip=True))
+            
+            # Per section/article/div[@class*="contact"], raccogli il titolo
+            if getattr(current, "name", None) in ("section", "article"):
+                for heading in current.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], limit=2):
+                    _append_unique(parts, heading.get_text(" ", strip=True))
         current = getattr(current, "parent", None)
         ancestor_count += 1
 
@@ -539,6 +572,8 @@ def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, lis
 
     try:
         soup = BeautifulSoup(html, "html.parser")
+        
+        # Process text nodes containing email
         nodes = soup.find_all(string=lambda s: isinstance(s, str) and email.lower() in s.lower())
         for node in nodes[:3]:
             parent = getattr(node, "parent", None)
@@ -548,12 +583,102 @@ def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, lis
             if any(h in parent_text for h in PL_HINTS):
                 score += 2
                 reasons.append("dom_parent_pl")
+            
+            # Controllare sibling precedente (spesso heading)
+            try:
+                prev_sibling = parent.find_previous_sibling()
+                if prev_sibling:
+                    sibling_text = _normalize_match_text(prev_sibling.get_text(" ", strip=True))
+                    for heading_tag in prev_sibling.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], limit=2):
+                        heading_text = _normalize_match_text(heading_tag.get_text(" ", strip=True))
+                        if any(h in heading_text for h in PL_HINTS):
+                            score += 2
+                            reasons.append("sibling_context_pl")
+                            break
+                        elif _best_context_similarity(heading_text, PL_CONTEXT_CONCEPTS) >= 0.75:
+                            score += 1
+                            reasons.append("sibling_context_pl")
+                            break
+            except Exception:
+                pass
+            
+            # Controllare section/article parent per titolo
+            section = parent
+            for _ in range(3):
+                section = getattr(section, "parent", None)
+                if not section:
+                    break
+                if getattr(section, "name", None) in ("section", "article"):
+                    for heading in section.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], limit=2):
+                        heading_text = _normalize_match_text(heading.get_text(" ", strip=True))
+                        if any(h in heading_text for h in PL_HINTS):
+                            score += 1
+                            reasons.append("section_context_pl")
+                            break
+                        elif _best_context_similarity(heading_text, PL_CONTEXT_CONCEPTS) >= 0.75:
+                            score += 1
+                            reasons.append("section_context_pl")
+                            break
+            
             prev_headings = parent.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "strong", "label"], limit=4)
             heading_text = _normalize_match_text(" ".join(tag.get_text(" ", strip=True) for tag in prev_headings))
             if any(h in heading_text for h in PL_HINTS):
                 score += 1
                 reasons.append("dom_heading_pl")
                 break
+        
+        # Process anchor tags with mailto href
+        for tag in soup.find_all(href=True):
+            href = tag.get("href", "").lower()
+            if not href.startswith("mailto:"):
+                continue
+            raw = tag.get("href", "").split(":", 1)[1].split("?", 1)[0].lower()
+            if email.lower() not in raw:
+                continue
+            
+            # Se parent è un anchor, controllarne il testo
+            anchor_text = tag.get_text(" ", strip=True).lower()
+            if anchor_text and any(k in anchor_text for k in PL_HINTS):
+                score += 1
+                reasons.append("anchor_context_pl")
+            elif anchor_text and _best_context_similarity(anchor_text, PL_CONTEXT_CONCEPTS) >= 0.75:
+                score += 1
+                reasons.append("anchor_context_pl")
+            
+            # Controllare sibling precedente del parent (spesso heading)
+            try:
+                parent = getattr(tag, "parent", None)
+                if parent:
+                    prev_sibling = parent.find_previous_sibling()
+                    if prev_sibling:
+                        # Se prev_sibling è un heading direttamente
+                        if getattr(prev_sibling, "name", None) in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                            heading_text = _normalize_match_text(prev_sibling.get_text(" ", strip=True))
+                            if any(h in heading_text for h in PL_HINTS):
+                                score += 2
+                                if "sibling_context_pl" not in reasons:
+                                    reasons.append("sibling_context_pl")
+                            elif _best_context_similarity(heading_text, PL_CONTEXT_CONCEPTS) >= 0.75:
+                                score += 1
+                                if "sibling_context_pl" not in reasons:
+                                    reasons.append("sibling_context_pl")
+                        # Altrimenti cerca heading inside prev_sibling
+                        else:
+                            sibling_text = _normalize_match_text(prev_sibling.get_text(" ", strip=True))
+                            for heading_tag in prev_sibling.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], limit=2):
+                                heading_text = _normalize_match_text(heading_tag.get_text(" ", strip=True))
+                                if any(h in heading_text for h in PL_HINTS):
+                                    score += 2
+                                    if "sibling_context_pl" not in reasons:
+                                        reasons.append("sibling_context_pl")
+                                    break
+                                elif _best_context_similarity(heading_text, PL_CONTEXT_CONCEPTS) >= 0.75:
+                                    score += 1
+                                    if "sibling_context_pl" not in reasons:
+                                        reasons.append("sibling_context_pl")
+                                    break
+            except Exception:
+                pass
     except Exception:
         pass
     return score, reasons
@@ -1220,8 +1345,20 @@ def scrape_polizia_locale(
         confidence += 0.1
     if any(is_pl_specific_email(e) for e in pec_all.union(mail_all)):
         confidence += 0.1
-    if any(k in " ".join(sorted(matched_by)) for k in ("context_polizia", "dom_parent_pl", "dom_heading_pl")):
+    
+    # Estendi bonus per nuovi segnali di contesto
+    matched_str = " ".join(sorted(matched_by))
+    context_signals = ("context_polizia", "dom_parent_pl", "dom_heading_pl", "context_fuzzy_polizia", "sibling_context_pl", "anchor_context_pl", "section_context_pl")
+    if any(k in matched_str for k in context_signals):
+        # Bonus base per qualsiasi segnale
         confidence += 0.05
+        # Bonus aggiuntivo se fuzzy o sibling context
+        if any(k in matched_str for k in ("context_fuzzy_polizia", "sibling_context_pl")):
+            confidence += 0.03
+        # Bonus aggiuntivo se anchor o section context
+        if any(k in matched_str for k in ("anchor_context_pl", "section_context_pl")):
+            confidence += 0.02
+    
     return ScrapeResult(
         comune=comune,
         codice_istat=codice_istat,

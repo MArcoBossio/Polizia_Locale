@@ -24,10 +24,14 @@ SOURCE_BASE = {
 
 SOURCE_BONUS = {
     "context_polizia": 0.10,
+    "context_fuzzy_polizia": 0.12,
     "context_non_pl": -0.08,
     "local_part_pl": 0.10,
     "dom_parent_pl": 0.08,
     "dom_heading_pl": 0.05,
+    "sibling_context_pl": 0.09,
+    "anchor_context_pl": 0.08,
+    "section_context_pl": 0.07,
     "page_html": 0.02,
     "js_render": 0.05,
     "ocr": 0.04,

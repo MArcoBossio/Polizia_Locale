@@ -227,3 +227,28 @@ def test_scrape_polizia_locale_uses_structured_browser_fallback(monkeypatch):
 
     assert result is not None
     assert result.email == "vigili@comune.example.com"
+
+
+def test_sibling_heading_context_scores_email():
+    """Heading in sibling should be picked up by DOM context and boost score."""
+    html = """
+    <html>
+      <body>
+        <h3>Servizio Associato di Vigilanza</h3>
+        <div>
+          <a href="mailto:vigili@cm-test.vda.it"></a>
+        </div>
+      </body>
+    </html>
+    """
+
+    pairs = scraper._extract_emails_with_context(html)
+
+    assert pairs
+    email, ctx = pairs[0]
+    score, reasons = scraper._score_email_context(html, email, ctx)
+
+    assert email == "vigili@cm-test.vda.it"
+    assert "servizio associato di vigilanza" in ctx.lower()
+    assert score >= 3
+    assert any(reason in reasons for reason in ("context_fuzzy_polizia", "sibling_context_pl", "anchor_context_pl"))
