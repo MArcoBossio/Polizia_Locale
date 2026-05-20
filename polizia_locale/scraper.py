@@ -23,6 +23,7 @@ import unicodedata
 import requests
 from bs4 import BeautifulSoup
 
+from .normalization import similarity
 from .utils import USER_AGENT
 from .utils import is_likely_personal_email
 
@@ -49,6 +50,38 @@ PL_HINTS = (
     "vigili urbani",
     "comando",
     "corpo di polizia",
+    "corpo unico",
+    "servizio associato di polizia",
+    "servizio associato di vigilanza",
+    "ufficio vigilanza",
+    "police locale",
+    "service de police",
+    "service de police locale",
+    "union des communes",
+    "municipalite",
+    "municipalité",
+    "vigiles",
+    "ortspolizei",
+    "gemeindepolizei",
+    "polizeiamt",
+)
+
+PL_CONTEXT_CONCEPTS = (
+    "polizia locale",
+    "polizia municipale",
+    "vigili urbani",
+    "comando polizia locale",
+    "servizio associato di polizia locale",
+    "servizio associato di vigilanza",
+    "ufficio vigilanza",
+    "corpo unico",
+    "police locale",
+    "service de police locale",
+    "service de police",
+    "union des communes",
+    "municipalité",
+    "municipalite",
+    "vigiles",
     "ortspolizei",
     "gemeindepolizei",
     "polizeiamt",
@@ -74,6 +107,70 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _context_segments(text: str) -> list[str]:
+    return [segment.strip() for segment in re.split(r"[|;/\n]+", _normalize_match_text(text)) if segment.strip()]
+
+
+def _best_context_similarity(text: str, concepts: tuple[str, ...]) -> float:
+    segments = _context_segments(text)
+    if not segments:
+        return 0.0
+    best = 0.0
+    for segment in segments:
+        for concept in concepts:
+            best = max(best, similarity(segment, concept))
+    return best
+
+
+def _append_unique(parts: list[str], text: str) -> None:
+    cleaned = _normalize_match_text(text)
+    if cleaned and cleaned not in parts:
+        parts.append(cleaned)
+
+
+def _dom_context_for_node(node, soup: BeautifulSoup, email: str) -> str:
+    parts: list[str] = []
+    try:
+        if hasattr(node, "get_text"):
+            source_text = node.get_text(" ", strip=True)
+        else:
+            source_text = str(node)
+    except Exception:
+        source_text = str(node)
+    _append_unique(parts, source_text)
+
+    current = getattr(node, "parent", None)
+    ancestor_count = 0
+    while current is not None and ancestor_count < 4:
+        if getattr(current, "name", None):
+            _append_unique(parts, current.get_text(" ", strip=True))
+            for attr in ("aria-label", "title", "data-label", "data-title"):
+                value = current.get(attr)
+                if value:
+                    _append_unique(parts, str(value))
+            try:
+                headings = current.find_previous(["h1", "h2", "h3", "h4", "h5", "h6"], limit=3)
+            except Exception:
+                headings = []
+            for heading in headings:
+                _append_unique(parts, heading.get_text(" ", strip=True))
+        current = getattr(current, "parent", None)
+        ancestor_count += 1
+
+    title = getattr(getattr(soup, "title", None), "string", "") or ""
+    _append_unique(parts, title)
+
+    for breadcrumb in soup.select(
+        ".breadcrumb, nav[aria-label*='breadcrumb' i], [aria-label*='breadcrumb' i]"
+    )[:3]:
+        _append_unique(parts, breadcrumb.get_text(" ", strip=True))
+
+    if email:
+        _append_unique(parts, email)
+
+    return " | ".join(parts)
+
+
 def _is_pec(email: str, context: str = "") -> bool:
     e = email.lower()
     if any(h in e for h in PEC_DOMAIN_HINTS):
@@ -81,6 +178,27 @@ def _is_pec(email: str, context: str = "") -> bool:
     if "pec" in context.lower():
         return True
     return False
+
+
+def _is_strict_pl_local_email(email: str) -> bool:
+    if not is_likely_personal_email(email) and "@" in email:
+        local = email.split("@", 1)[0].lower().strip()
+        if local in {"info", "segreteria"}:
+            return False
+    return False if not email else any(
+        k in email.split("@", 1)[0].lower().strip()
+        for k in (
+            "polizialocale",
+            "poliziamunicipale",
+            "vigili",
+            "comandopm",
+            "comandopl",
+            "pol.locale",
+            "pol.municipale",
+            "pm.",
+            "pl.",
+        )
+    )
 
 
 @dataclass
@@ -357,12 +475,44 @@ def _broad_candidate_links(soup: BeautifulSoup, base: str, limit: int = 8, page_
 
 def _extract_emails_with_context(html: str) -> list[tuple[str, str]]:
     """Ritorna (email, contesto_breve)."""
-    out = []
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    soup = BeautifulSoup(html, "html.parser")
+
+    for node in soup.find_all(string=True):
+        text = str(node)
+        if "@" not in text:
+            continue
+        for m in EMAIL_RE.finditer(text):
+            email = m.group(0)
+            ctx = _dom_context_for_node(node, soup, email)
+            key = (email, ctx)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((email, ctx))
+
+    for tag in soup.find_all(href=True):
+        href = tag.get("href", "")
+        if not href.lower().startswith("mailto:"):
+            continue
+        raw = href.split(":", 1)[1].split("?", 1)[0]
+        for m in EMAIL_RE.finditer(raw):
+            email = m.group(0)
+            ctx = _dom_context_for_node(tag, soup, email)
+            key = (email, ctx)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((email, ctx))
+
+    if out:
+        return out
+
     for m in EMAIL_RE.finditer(html):
-        start = max(0, m.start() - 80)
-        end = min(len(html), m.end() + 80)
-        ctx = html[start:end]
-        out.append((m.group(0), ctx))
+        start = max(0, m.start() - 120)
+        end = min(len(html), m.end() + 120)
+        out.append((m.group(0), html[start:end]))
     return out
 
 
@@ -373,6 +523,9 @@ def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, lis
     if any(h in norm_ctx for h in PL_HINTS):
         score += 2
         reasons.append("context_polizia")
+    elif _best_context_similarity(norm_ctx, PL_CONTEXT_CONCEPTS) >= 0.78:
+        score += 2
+        reasons.append("context_fuzzy_polizia")
     if any(h in norm_ctx for h in NEGATIVE_HINTS):
         score -= 2
         reasons.append("context_non_pl")
@@ -395,7 +548,7 @@ def _score_email_context(html: str, email: str, ctx: str = "") -> tuple[int, lis
             if any(h in parent_text for h in PL_HINTS):
                 score += 2
                 reasons.append("dom_parent_pl")
-            prev_headings = parent.find_all_previous(["h1", "h2", "h3", "h4", "strong", "label"], limit=4)
+            prev_headings = parent.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "strong", "label"], limit=4)
             heading_text = _normalize_match_text(" ".join(tag.get_text(" ", strip=True) for tag in prev_headings))
             if any(h in heading_text for h in PL_HINTS):
                 score += 1
@@ -461,6 +614,30 @@ def _browser_rendered_text(url: str, timeout_ms: int = 15000) -> str:
         from PIL import Image
     except Exception:
         return ""
+
+
+def _browser_rendered_pairs(url: str, timeout_ms: int = 15000) -> list[tuple[str, str]]:
+    """Renderizza la pagina con Playwright e recupera email con contesto DOM."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=USER_AGENT,
+                locale="it-IT",
+                viewport={"width": 1440, "height": 2200},
+            )
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_timeout(800)
+            html = page.content()
+            browser.close()
+        return _extract_emails_with_context(html)
+    except Exception:
+        return []
 
     try:
         with sync_playwright() as p:
@@ -544,13 +721,20 @@ def _filter_polizia_emails(
                 "polizia local",
                 "polizia municipal",
                 "vigili urbani",
+                "servizio associato di polizia",
+                "servizio associato di vigilanza",
                 "comando p.m",
                 "comando pl",
                 "comando pm",
                 "comando di polizia",
                 "polizia urbana",
+                "service de police",
+                "service de police locale",
+                "union des communes",
+                "municipalite",
+                "municipalité",
             ]
-        )
+        ) or _best_context_similarity(ctx_l, PL_CONTEXT_CONCEPTS) >= 0.78
         if not (page_is_polizia or is_pl_local or is_pl_ctx or ctx_score >= 2):
             continue
         # escludi indirizzi personali e provider gratuiti se non chiaramente PL
@@ -742,7 +926,7 @@ def scrape_polizia_locale(
     def _accept_email(email: str, ctx: str, html: str, page_is_polizia: bool, source_kind: str) -> None:
         ctx_score, reasons = _score_email_context(html, email, ctx)
         local = email.split("@")[0].lower()
-        is_pl_local = is_pl_specific_email(email)
+        is_pl_local = _is_strict_pl_local_email(email)
         is_pl_ctx = any(k in _normalize_match_text(ctx) for k in PL_HINTS)
         generic_local_parts = {
             "info",
@@ -759,9 +943,7 @@ def scrape_polizia_locale(
             "postmaster",
         }
         if strict_pl_local:
-            if not is_pl_local and local in generic_local_parts and not (
-                page_is_polizia or is_pl_ctx or ctx_score >= 4
-            ):
+            if not is_pl_local and local in generic_local_parts:
                 return
             if not (is_pl_local or page_is_polizia or is_pl_ctx or ctx_score >= 4):
                 return
@@ -792,12 +974,17 @@ def scrape_polizia_locale(
         if (not found_before) and not (pec_all or mail_all) and page_url:
             html_l = html.lower()
             if url_is_pl or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
-                rendered_text = _browser_rendered_text(page_url)
-                if rendered_text:
-                    for m in EMAIL_RE.finditer(rendered_text):
-                        e = m.group(0)
-                        ctx = rendered_text[max(0, m.start() - 80):m.end() + 80]
-                        _accept_email(e, ctx, rendered_text, url_is_pl, "js_render")
+                rendered_pairs = _browser_rendered_pairs(page_url)
+                for e, ctx in rendered_pairs:
+                    _accept_email(e, ctx, ctx, url_is_pl, "js_render")
+
+                if not rendered_pairs:
+                    rendered_text = _browser_rendered_text(page_url)
+                    if rendered_text:
+                        for m in EMAIL_RE.finditer(rendered_text):
+                            e = m.group(0)
+                            ctx = rendered_text[max(0, m.start() - 80):m.end() + 80]
+                            _accept_email(e, ctx, rendered_text, url_is_pl, "js_render")
 
                 if not (pec_all or mail_all):
                     ocr_text = _ocr_page_screenshot(page_url)

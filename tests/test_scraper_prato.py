@@ -167,3 +167,63 @@ def test_scrape_polizia_locale_strict_skips_info_and_keeps_searching(monkeypatch
     assert result.email == "polizia.locale@comune.example.com"
     assert page_generic in fake_session.calls
     assert page_specific in fake_session.calls
+
+
+def test_dom_context_beats_distant_negative_hints():
+        html = """
+        <html>
+            <head><title>Comune di Test</title></head>
+            <body>
+                <nav class="breadcrumb">Home / Servizi / Polizia Locale</nav>
+                <aside><p>anagrafe protocollo tributi</p></aside>
+                <section>
+                    <h2>Servizio associato di Polizia Locale</h2>
+                    <p>Email: vigili@cm-test.vda.it</p>
+                </section>
+            </body>
+        </html>
+        """
+
+        pairs = scraper._extract_emails_with_context(html)
+
+        assert pairs
+        email, ctx = pairs[0]
+        score, reasons = scraper._score_email_context(html, email, ctx)
+
+        assert email == "vigili@cm-test.vda.it"
+        assert "servizio associato di polizia locale" in ctx.lower()
+        assert score >= 4
+        assert any(reason in reasons for reason in ("context_polizia", "context_fuzzy_polizia", "dom_heading_pl"))
+
+def test_scrape_polizia_locale_uses_structured_browser_fallback(monkeypatch):
+    base = "https://www.example.com"
+
+    fake_session = _FakeSession(
+        {
+            base: SimpleNamespace(
+                status_code=200,
+                text="<html><body><h1>Comune di Esempio</h1></body></html>",
+                url=base,
+            )
+        }
+    )
+
+    monkeypatch.setattr(scraper, "_new_session", lambda: fake_session)
+    monkeypatch.setattr(scraper, "find_comune_website", lambda *args, **kwargs: base)
+    monkeypatch.setattr(scraper, "_browser_rendered_pairs", lambda *args, **kwargs: [("vigili@comune.example.com", "Servizio associato di Polizia Locale | vigili@comune.example.com")])
+    monkeypatch.setattr(scraper, "_browser_rendered_text", lambda *args, **kwargs: "")
+    monkeypatch.setattr(scraper, "_ocr_page_screenshot", lambda *args, **kwargs: "")
+
+    result = scraper.scrape_polizia_locale(
+        "Esempio",
+        "Trento",
+        "000001",
+        site_hint=base,
+        timeout=5,
+        total_budget=10,
+        strict_pl_local=True,
+        pdf_extract=False,
+    )
+
+    assert result is not None
+    assert result.email == "vigili@comune.example.com"

@@ -16,6 +16,20 @@ from pypdf import PdfReader
 from .scraper import EMAIL_RE
 
 
+def _extract_emails_with_line_context(text: str) -> list[tuple[str, str]]:
+    lines = [line.strip() for line in text.splitlines()]
+    out: list[tuple[str, str]] = []
+    for idx, line in enumerate(lines):
+        if "@" not in line:
+            continue
+        for m in EMAIL_RE.finditer(line):
+            start = max(0, idx - 2)
+            end = min(len(lines), idx + 3)
+            context = " | ".join(part for part in lines[start:end] if part)
+            out.append((m.group(0), context or line))
+    return out
+
+
 def extract_emails_from_pdf_url(
     session: requests.Session, url: str, timeout: int = 8, max_size_bytes: int = 5_000_000
 ) -> list[tuple[str, str]]:
@@ -61,12 +75,7 @@ def extract_emails_from_pdf_url(
         except Exception:
             pass
 
-    out: list[tuple[str, str]] = []
-    for m in EMAIL_RE.finditer(text):
-        start = max(0, m.start() - 80)
-        end = min(len(text), m.end() + 80)
-        out.append((m.group(0), text[start:end]))
-    return out
+    return _extract_emails_with_line_context(text)
 
 
 def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:

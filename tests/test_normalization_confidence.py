@@ -9,7 +9,7 @@ from polizia_locale.normalization import (
   is_close_match,
 )
 from polizia_locale.pm_registry import PoliziaMunicipaleFinder
-from polizia_locale.pdf_extractor import find_pdf_links_broad
+from polizia_locale.pdf_extractor import find_pdf_links_broad, _extract_emails_with_line_context
 
 
 def test_normalization_handles_abbreviations_bilingual_and_apostrophes():
@@ -77,6 +77,19 @@ def test_find_pdf_links_broad_includes_contact_pdfs():
 
     assert links[0].endswith("organigramma.pdf")
     assert any(link.endswith("regolamento.pdf") for link in links)
+
+
+def test_pdf_line_context_keeps_nearby_heading():
+    text = """
+    Comune di Test
+    Servizio associato di Polizia Locale
+    Contatti: vigili@cm-test.vda.it
+    Anagrafe / Tributi / Protocollo
+    """
+
+    pairs = _extract_emails_with_line_context(text)
+
+    assert pairs == [("vigili@cm-test.vda.it", "Comune di Test | Servizio associato di Polizia Locale | Contatti: vigili@cm-test.vda.it | Anagrafe / Tributi / Protocollo")]
 
 
 def test_poliziamunicipale_finder_matches_bilingual_commune_name(monkeypatch):
