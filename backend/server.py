@@ -60,6 +60,7 @@ class ScrapeJob:
     stdout: str = ""
     stderr: str = ""
     error: str | None = None
+    progress: int = 0
 
 
 _JOB_LOCK = threading.Lock()
@@ -149,6 +150,7 @@ def _job_snapshot(job: ScrapeJob) -> dict[str, Any]:
         "region": job.region,
         "command": job.command,
         "status": job.status,
+        "progress": job.progress,
         "created_at": job.created_at,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
@@ -164,6 +166,10 @@ def _run_scrape_job(job_id: str, payload: ScrapeRequest):
     command = _build_scrape_command(payload)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    # Ensure child Python processes use UTF-8 for stdout/stderr to avoid
+    # UnicodeEncodeError when printing non-ASCII characters on Windows.
+    env["PYTHONUTF8"] = env.get("PYTHONUTF8", "1")
+    env["PYTHONIOENCODING"] = env.get("PYTHONIOENCODING", "utf-8")
     with _JOB_LOCK:
         job = _JOBS[job_id]
         job.status = "running"
@@ -184,21 +190,66 @@ def _run_scrape_job(job_id: str, payload: ScrapeRequest):
             popen_kwargs["start_new_session"] = True
 
         proc = subprocess.Popen(command, **popen_kwargs)
+
         with _JOB_LOCK:
             job = _JOBS[job_id]
             job.process = proc
 
-        stdout, stderr = proc.communicate()
+        # Stream stdout/stderr and update job fields in real time
+        def _stdout_reader():
+            try:
+                for raw in proc.stdout:
+                    if raw is None:
+                        break
+                    line = raw.rstrip("\n")
+                    with _JOB_LOCK:
+                        job = _JOBS[job_id]
+                        job.stdout = (job.stdout + line + "\n")[-20000:]
+                        # heuristic progress detection
+                        if "[1/4]" in line:
+                            job.progress = max(job.progress, 10)
+                        if "[2/4]" in line:
+                            job.progress = max(job.progress, 35)
+                        if "[3/4]" in line:
+                            job.progress = max(job.progress, 65)
+                        if "[4/4]" in line:
+                            job.progress = max(job.progress, 85)
+                        if "=== RISULTATI ===" in line or "File generati:" in line:
+                            job.progress = 100
+            except Exception:
+                pass
+
+        def _stderr_reader():
+            try:
+                for raw in proc.stderr:
+                    if raw is None:
+                        break
+                    line = raw.rstrip("\n")
+                    with _JOB_LOCK:
+                        job = _JOBS[job_id]
+                        job.stderr = (job.stderr + line + "\n")[-20000:]
+            except Exception:
+                pass
+
+        t_out = threading.Thread(target=_stdout_reader, daemon=True)
+        t_err = threading.Thread(target=_stderr_reader, daemon=True)
+        t_out.start()
+        t_err.start()
+
+        proc.wait()
+        t_out.join(timeout=1)
+        t_err.join(timeout=1)
+
         returncode = proc.returncode
 
         with _JOB_LOCK:
             job = _JOBS[job_id]
             job.exit_code = returncode
-            job.stdout = (stdout or "")[-20000:]
-            job.stderr = (stderr or "")[-20000:]
             job.process = None
             job.status = "completed" if returncode == 0 else "failed"
             job.finished_at = datetime.now(timezone.utc).isoformat()
+            if job.progress < 100 and returncode == 0:
+                job.progress = 100
             if returncode == 0:
                 outputs = _list_output_files()
                 job.output_slug = outputs[0]["slug"] if outputs else None

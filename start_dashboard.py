@@ -65,6 +65,10 @@ def main() -> int:
     backend_cmd = _build_backend_command(args.backend_host, args.backend_port)
     backend_env = os.environ.copy()
     backend_env["PYTHONPATH"] = str(ROOT) + os.pathsep + backend_env.get("PYTHONPATH", "")
+    # Ensure child Python processes use UTF-8 for stdout/stderr to avoid
+    # UnicodeEncodeError when printing non-ASCII characters on Windows.
+    backend_env["PYTHONUTF8"] = "1"
+    backend_env["PYTHONIOENCODING"] = "utf-8"
 
     frontend_backend_url = f"http://{args.backend_host}:{args.backend_port}"
     frontend_env, frontend_cmd = _build_frontend_command(args.frontend_host, args.frontend_port, frontend_backend_url)

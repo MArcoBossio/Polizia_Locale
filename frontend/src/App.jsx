@@ -292,6 +292,22 @@ function App() {
           </div>
         </section>
 
+        {job ? (
+          <section className="job-log-card">
+            <div className="job-log-header">
+              <h3>Job log — {job.id}</h3>
+              <div>
+                {job.status === "running" ? (
+                  <button onClick={cancelJob}>Cancella job</button>
+                ) : null}
+              </div>
+            </div>
+            <pre className="job-log">
+{(job.stdout || "").slice(-16000)}
+            </pre>
+          </section>
+        ) : null}
+
         <section className="scrape-card">
           <div className="scrape-card-header">
             <div>
@@ -340,6 +356,12 @@ function App() {
                 {jobBusy ? "Avvio..." : "Avvia scraping"}
               </button>
               {job ? <span className="job-status">{job.status}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}</span> : null}
+              {job ? (
+                <div className="job-progress">
+                  <div className="job-progress-bar" style={{ width: `${job.progress || 0}%` }} />
+                  <small>{job.progress ? `${job.progress}%` : ""}</small>
+                </div>
+              ) : null}
             </div>
             <label className="field field-grow">
               <span>API Key (opzionale)</span>

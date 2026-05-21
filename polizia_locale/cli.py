@@ -252,7 +252,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                     total_attrib += 1
             print(
                 f"      Unioni che servono comuni della regione: {len(unioni_in_region)} "
-                f"→ {total_attrib} comuni associati (filtrati per provincia)."
+                f"-> {total_attrib} comuni associati (filtrati per provincia)."
             )
 
     enti_idx = None

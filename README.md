@@ -127,6 +127,18 @@ start_dashboard.bat
 Lo script attende che backend e frontend siano pronti e apre il browser in
 automatico; se serve puoi disattivarlo con `--no-open-browser`.
 
+Nota sul launcher Windows
+------------------------
+
+I wrapper `start_dashboard.bat` e `start_dashboard.ps1` ora preferiscono la
+Python della virtualenv locale (`.venv\Scripts\python.exe`) se presente nella
+cartella del progetto. Questo evita errori dovuti a dipendenze mancanti quando
+si avvia la dashboard facendo doppio clic sul batch su Windows.
+
+Se usi un ambiente virtuale con nome diverso da `.venv`, avvia invece il
+launcher con il Python attivo nella shell (o esegui manualmente `python
+start_dashboard.py` dalla venv attiva).
+
 ```bash
 python start_dashboard.py --no-open-browser
 ```

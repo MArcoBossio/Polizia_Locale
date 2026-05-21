@@ -13,12 +13,17 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $launcher = Join-Path $root "start_dashboard.py"
 
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    $python = Get-Command py -ErrorAction SilentlyContinue
-}
-if (-not $python) {
-    throw "Python non trovato nel PATH. Installa Python oppure avvia start_dashboard.py manualmente."
+# Prefer a local .venv Python if present, otherwise fall back to system python/py
+$venvPy = Join-Path $root ".venv\Scripts\python.exe"
+if (Test-Path $venvPy) {
+    $pythonExe = $venvPy
+} else {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not $cmd) {
+        throw "Python non trovato nel PATH. Installa Python oppure avvia start_dashboard.py manualmente."
+    }
+    $pythonExe = $cmd.Source
 }
 
 $args = @(
@@ -34,5 +39,5 @@ if ($NoOpenBrowser) {
     $args += "--no-open-browser"
 }
 
-& $python.Source @args
+& $pythonExe @args
 exit $LASTEXITCODE

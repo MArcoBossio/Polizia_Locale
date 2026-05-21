@@ -282,6 +282,31 @@
     align-items: center;
     gap: 12px;
 }
+.job-progress {
+    display: flex;
+    flex-direction: column;
+    width: 200px;
+}
+.job-progress-bar {
+    height: 8px;
+    background: linear-gradient(90deg,#4f46e5,#06b6d4);
+    border-radius: 4px;
+    margin-top: 6px;
+}
+.job-log-card {
+    margin-top: 18px;
+    background: #0b1220;
+    color: #cbd5e1;
+    padding: 12px;
+    border-radius: 8px;
+}
+.job-log {
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace;
+    font-size: 12px;
+}
 
 .scrape-actions button {
     border: none;
