@@ -167,6 +167,24 @@ function App() {
         }),
       });
       if (!response.ok) {
+        // If another job is already running, the backend returns 409.
+        if (response.status === 409) {
+          try {
+            const jobsResp = await fetch(`${API}/jobs`);
+            if (jobsResp.ok) {
+              const payload = await jobsResp.json();
+              const running = (payload.jobs || []).find((j) => j.status === "running");
+              if (running) {
+                setJob(running);
+                setError("Un job è già in esecuzione: puoi cancellarlo o attendere il termine.");
+                return;
+              }
+            }
+          } catch (e) {
+            // ignore and fall through to generic error
+          }
+          throw new Error("Un job è già in esecuzione");
+        }
         throw new Error(`Impossibile avviare lo scraping (${response.status})`);
       }
       const payload = await response.json();
