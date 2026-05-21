@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "@/App.css";
 
 const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
@@ -23,41 +23,65 @@ function App() {
   const [loadingFiles, setLoadingFiles] = useState(true);
   const [loadingRows, setLoadingRows] = useState(false);
   const [error, setError] = useState("");
+  const [regions, setRegions] = useState([]);
+  const [selectedRegion, setSelectedRegion] = useState("");
+  const [includeComunePec, setIncludeComunePec] = useState(false);
+  const [webSearch, setWebSearch] = useState(true);
+  const [pmSource, setPmSource] = useState(true);
+  const [strict, setStrict] = useState(true);
+  const [scrapeLimit, setScrapeLimit] = useState("");
+  const [job, setJob] = useState(null);
+  const [jobBusy, setJobBusy] = useState(false);
+  const [apiKey, setApiKey] = useState(localStorage.getItem("POLIZIA_DASH_API_KEY") || "");
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadFiles() {
-      setLoadingFiles(true);
-      setError("");
-      try {
-        const response = await fetch(`${API}/outputs`);
-        if (!response.ok) {
-          throw new Error(`Impossibile leggere gli output (${response.status})`);
-        }
-        const payload = await response.json();
-        if (cancelled) return;
-        const nextFiles = payload.files || [];
-        setFiles(nextFiles);
-        if (nextFiles.length > 0) {
-          setSelectedSlug((prev) => prev || nextFiles[0].slug);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err.message || "Errore nel caricamento degli output");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingFiles(false);
-        }
+  const refreshFiles = useCallback(async (preferredSlug = "") => {
+    setLoadingFiles(true);
+    setError("");
+    try {
+      const response = await fetch(`${API}/outputs`);
+      if (!response.ok) {
+        throw new Error(`Impossibile leggere gli output (${response.status})`);
       }
+      const payload = await response.json();
+      const nextFiles = payload.files || [];
+      setFiles(nextFiles);
+      setSelectedSlug((prev) => {
+        if (preferredSlug && nextFiles.some((item) => item.slug === preferredSlug)) {
+          return preferredSlug;
+        }
+        if (prev && nextFiles.some((item) => item.slug === prev)) {
+          return prev;
+        }
+        return nextFiles[0]?.slug || "";
+      });
+    } catch (err) {
+      setError(err.message || "Errore nel caricamento degli output");
+    } finally {
+      setLoadingFiles(false);
     }
-    loadFiles();
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  const refreshRegions = useCallback(async () => {
+    try {
+      const response = await fetch(`${API}/regions`);
+      if (!response.ok) {
+        throw new Error(`Impossibile leggere le regioni (${response.status})`);
+      }
+      const payload = await response.json();
+      const nextRegions = payload.regions || [];
+      setRegions(nextRegions);
+      setSelectedRegion((prev) => prev || nextRegions[0]?.name || "");
+    } catch (err) {
+      setError(err.message || "Errore nel caricamento delle regioni");
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshFiles();
+    refreshRegions();
+  }, [refreshFiles, refreshRegions]);
 
   useEffect(() => {
     if (!selectedSlug) return;
@@ -91,6 +115,88 @@ function App() {
       cancelled = true;
     };
   }, [selectedSlug]);
+
+  useEffect(() => {
+    if (!job?.id || job.status === "completed" || job.status === "failed") {
+      return undefined;
+    }
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const headers = { "Content-Type": "application/json" };
+        if (apiKey) headers["x-api-key"] = apiKey;
+        const response = await fetch(`${API}/jobs/${job.id}`, { headers });
+        if (!response.ok) {
+          throw new Error(`Impossibile leggere il job (${response.status})`);
+        }
+        const payload = await response.json();
+        if (cancelled) return;
+        setJob(payload);
+        if (payload.status === "completed") {
+          await refreshFiles(payload.output_slug || "");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || "Errore nel monitoraggio dello scraping");
+        }
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [job?.id, job?.status, refreshFiles]);
+
+  async function startScrape(event) {
+    event.preventDefault();
+    setJobBusy(true);
+    setError("");
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (apiKey) headers["x-api-key"] = apiKey;
+      const response = await fetch(`${API}/scrape`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          region: selectedRegion,
+          include_comune_pec: includeComunePec,
+          web_search: webSearch,
+          pm_source: pmSource,
+          strict,
+          scrape_limit: scrapeLimit ? Number(scrapeLimit) : 0,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`Impossibile avviare lo scraping (${response.status})`);
+      }
+      const payload = await response.json();
+      setJob(payload);
+    } catch (err) {
+      setError(err.message || "Errore nell'avvio dello scraping");
+    } finally {
+      setJobBusy(false);
+    }
+  }
+
+  async function cancelJob() {
+    if (!job?.id) return;
+    setError("");
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (apiKey) headers["x-api-key"] = apiKey;
+      const response = await fetch(`${API}/jobs/${job.id}/cancel`, {
+        method: "POST",
+        headers,
+      });
+      if (!response.ok) {
+        throw new Error(`Impossibile cancellare il job (${response.status})`);
+      }
+      const payload = await response.json();
+      setJob((prev) => ({ ...prev, status: payload.status || "cancelled" }));
+    } catch (err) {
+      setError(err.message || "Errore nella cancellazione del job");
+    }
+  }
 
   const rows = current?.rows || [];
   const sources = useMemo(() => {
@@ -134,6 +240,7 @@ function App() {
   const contactCount = summary.rows_with_contact ?? rows.filter((row) => row.pec || row.mail).length;
   const noContactCount = summary.rows_without_contact ?? rows.length - contactCount;
   const percentage = rows.length ? Math.round((contactCount / rows.length) * 100) : 0;
+  const jobLabel = job?.status ? job.status.toUpperCase() : "IDLE";
 
   return (
     <div className="dashboard-shell">
@@ -183,6 +290,70 @@ function App() {
               ) : null}
             </div>
           </div>
+        </section>
+
+        <section className="scrape-card">
+          <div className="scrape-card-header">
+            <div>
+              <h2>Nuova ricerca</h2>
+              <p>Avvia uno scraping su una regione diversa senza uscire dalla dashboard.</p>
+            </div>
+            <span className="job-pill">{jobLabel}</span>
+          </div>
+
+          <form className="scrape-grid" onSubmit={startScrape}>
+            <label className="field">
+              <span>Regione</span>
+              <select value={selectedRegion} onChange={(event) => setSelectedRegion(event.target.value)}>
+                {regions.length === 0 ? (
+                  <option value="">Nessuna regione disponibile</option>
+                ) : (
+                  regions.map((region) => (
+                    <option key={region.code} value={region.name}>
+                      {region.name} [{region.code}]
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Limite scraping</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="0 = senza limite"
+                value={scrapeLimit}
+                onChange={(event) => setScrapeLimit(event.target.value)}
+              />
+            </label>
+
+            <div className="scrape-options">
+              <label><input type="checkbox" checked={includeComunePec} onChange={(event) => setIncludeComunePec(event.target.checked)} /> PEC generica del Comune</label>
+              <label><input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} /> Web search</label>
+              <label><input type="checkbox" checked={pmSource} onChange={(event) => setPmSource(event.target.checked)} /> Fonte PM</label>
+              <label><input type="checkbox" checked={strict} onChange={(event) => setStrict(event.target.checked)} /> Modalità strict</label>
+            </div>
+
+            <div className="scrape-actions">
+              <button type="submit" disabled={jobBusy || job?.status === "running" || !selectedRegion}>
+                {jobBusy ? "Avvio..." : "Avvia scraping"}
+              </button>
+              {job ? <span className="job-status">{job.status}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}</span> : null}
+            </div>
+            <label className="field field-grow">
+              <span>API Key (opzionale)</span>
+              <input
+                type="password"
+                placeholder="Inserisci API key per avviare/cancellare job"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  try { localStorage.setItem("POLIZIA_DASH_API_KEY", e.target.value); } catch {}
+                }}
+              />
+            </label>
+          </form>
         </section>
 
         {error ? <div className="alert-card">{error}</div> : null}
@@ -263,10 +434,12 @@ function App() {
                   </tr>
                 ) : (
                   filteredRows.map((row) => {
-                    const contact = row.pec || row.mail || "NON TROVATO";
-                    const badgeClass = row.pec
+                    const hasPec = Boolean(row.pec);
+                    const hasMail = Boolean(row.mail);
+                    const contact = hasPec && hasMail ? `${row.pec} · ${row.mail}` : row.pec || row.mail || "NON TROVATO";
+                    const badgeClass = hasPec
                       ? "badge badge-pec"
-                      : row.mail
+                      : hasMail
                         ? "badge badge-mail"
                         : "badge badge-empty";
                     return (
@@ -282,7 +455,11 @@ function App() {
                         </td>
                         <td>
                           <div className="contact-stack">
-                            <span className={badgeClass}>{row.pec ? "PEC" : row.mail ? "MAIL" : "VUOTO"}</span>
+                            <span className="contact-badges">
+                              {hasPec ? <span className="badge badge-pec">PEC</span> : null}
+                              {hasMail ? <span className="badge badge-mail">MAIL</span> : null}
+                              {!hasPec && !hasMail ? <span className="badge badge-empty">VUOTO</span> : null}
+                            </span>
                             <span className="contact-value">{contact}</span>
                           </div>
                         </td>

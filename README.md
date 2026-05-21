@@ -134,6 +134,36 @@ python start_dashboard.py --no-open-browser
 La dashboard mostra copertura, confidence media, filtri locali e link di
 download per JSON/CSV/XLSX.
 
+## Dashboard API / Sicurezza
+
+Il backend include un semplice meccanismo di protezione tramite API key per
+gli endpoint che avviano o cancellano job di scraping (`POST /api/scrape` e
+`POST /api/jobs/{id}/cancel`). Per abilitarlo, imposta la variabile
+`BACKEND_API_KEY` nel file `.env` della cartella `backend/` o come variabile
+d'ambiente del sistema:
+
+```text
+BACKEND_API_KEY=la_tua_chiave_segreta
+```
+
+Quando `BACKEND_API_KEY` è impostata, il dashboard richiederà la chiave per
+avviare o cancellare job. Puoi inserirla nell'app frontend nella sezione
+`API Key (opzionale)`; il valore viene salvato in `localStorage` (chiave
+`POLIZIA_DASH_API_KEY`) e inviato come header `x-api-key` alle richieste.
+
+Opzionalmente puoi regolare il comportamento di terminazione forzata con la
+variabile `BACKEND_KILL_TIMEOUT` (secondi, default `5`). Se un job non termina
+entro questo timeout dopo la richiesta di cancellazione, il backend tenta una
+forzatura (`taskkill` su Windows o `SIGKILL` sul resto dei sistemi).
+
+Esempio `.env` con entrambe le variabili:
+
+```
+BACKEND_API_KEY=segreta123
+BACKEND_KILL_TIMEOUT=5
+```
+
+
 Per puntare il frontend a un backend diverso, imposta `VITE_BACKEND_URL` nel
 file `.env` del frontend.
 

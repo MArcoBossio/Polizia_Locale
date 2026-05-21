@@ -1,0 +1,25 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-frontend-dashboard",
+			"type": "shell",
+			"command": "cmd /c \"cd /d c:/Users/marco/Documents/GitHub/Polizia_Locale/frontend && npm.cmd run build\"",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-frontend-dashboard-ps",
+			"type": "shell",
+			"command": "Set-Location 'c:/Users/marco/Documents/GitHub/Polizia_Locale/frontend'; & npm.cmd run build",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		}
+	]
+}
