@@ -1098,7 +1098,7 @@ def scrape_polizia_locale(
         # Fallback: prima il testo renderizzato dal browser, poi lo screenshot OCR.
         if (not found_before) and not (pec_all or mail_all) and page_url:
             html_l = html.lower()
-            if url_is_pl or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
+            if url_is_pl or page_url == site or "polizia" in html_l or "municipium" in html_l or "contatti" in html_l:
                 rendered_pairs = _browser_rendered_pairs(page_url)
                 for e, ctx in rendered_pairs:
                     _accept_email(e, ctx, ctx, url_is_pl, "js_render")

@@ -1,89 +1,131 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+from __future__ import annotations
+
+import json
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
+import os
 from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from starlette.middleware.cors import CORSMiddleware
 
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+PROJECT_ROOT = ROOT_DIR.parent
+OUTPUT_DIR = PROJECT_ROOT / "output"
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+app = FastAPI(title="Polizia Locale Dashboard API")
 api_router = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Polizia Locale dashboard API"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+def _read_json(path: Path) -> list[dict]:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, list) else []
 
-# Include the router in the main app
+
+def _summarize_rows(rows: list[dict]) -> dict:
+    total = len(rows)
+    with_contact = [row for row in rows if (row.get("pec") or row.get("mail"))]
+    not_found = [row for row in rows if "NON TROVATO" in (row.get("fonte") or "")]
+    confidence_values: list[float] = []
+    for row in rows:
+        try:
+            confidence_values.append(float(row.get("confidence", 0) or 0))
+        except Exception:
+            continue
+    avg_confidence = round(sum(confidence_values) / len(confidence_values), 3) if confidence_values else 0.0
+    return {
+        "total_rows": total,
+        "rows_with_contact": len(with_contact),
+        "rows_without_contact": total - len(with_contact),
+        "not_found_rows": len(not_found),
+        "avg_confidence": avg_confidence,
+    }
+
+
+def _output_metadata(path: Path) -> dict:
+    rows = _read_json(path)
+    stat = path.stat()
+    stem = path.stem
+    return {
+        "slug": stem,
+        "label": stem.removeprefix("polizia_locale_").replace("-", " ").title(),
+        "json_path": str(path),
+        "csv_path": str(path.with_suffix(".csv")),
+        "xlsx_path": str(path.with_suffix(".xlsx")),
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+        "size_bytes": stat.st_size,
+        "summary": _summarize_rows(rows),
+    }
+
+
+def _list_output_files() -> list[dict]:
+    if not OUTPUT_DIR.exists():
+        return []
+    files = [path for path in OUTPUT_DIR.glob("polizia_locale_*.json") if path.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return [_output_metadata(path) for path in files]
+
+
+@api_router.get("/outputs")
+async def list_outputs():
+    return {"files": _list_output_files()}
+
+
+@api_router.get("/outputs/latest")
+async def latest_output():
+    files = _list_output_files()
+    if not files:
+        raise HTTPException(status_code=404, detail="Nessun output disponibile")
+    return files[0]
+
+
+@api_router.get("/outputs/{slug}")
+async def get_output(slug: str):
+    path = OUTPUT_DIR / f"{slug}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Output non trovato")
+    rows = _read_json(path)
+    return {"file": _output_metadata(path), "summary": _summarize_rows(rows), "rows": rows}
+
+
+@api_router.get("/outputs/{slug}/download/{kind}")
+async def download_output(slug: str, kind: str):
+    kind = kind.lower().strip()
+    if kind not in {"json", "csv", "xlsx"}:
+        raise HTTPException(status_code=400, detail="Formato non supportato")
+    path = OUTPUT_DIR / f"{slug}.{kind}"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File non trovato")
+    media_type = {
+        "json": "application/json",
+        "csv": "text/csv",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }[kind]
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

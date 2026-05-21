@@ -100,9 +100,6 @@ def _normalize_output_mail(row: dict) -> str:
         "postmaster",
     )
     for email in parts:
-        if is_pl_specific_email(email):
-            kept.append(email)
-            continue
         local = email.split("@", 1)[0].lower() if "@" in email else email.lower()
         if any(
             local == g
@@ -112,8 +109,23 @@ def _normalize_output_mail(row: dict) -> str:
             for g in generic_local_parts
         ):
             continue
+        if is_pl_specific_email(email):
+            kept.append(email)
+            continue
         kept.append(email)
     return " | ".join(sorted(set(kept)))
+
+
+def _effective_expensive_limit(total_comuni: int, user_limit: int) -> int:
+    if user_limit and user_limit > 0:
+        return user_limit
+    if total_comuni <= 300:
+        return 0
+    if total_comuni <= 500:
+        return 120
+    if total_comuni <= 800:
+        return 90
+    return 60
 
 
 BANNER = r"""
@@ -308,16 +320,23 @@ def _run(region_code: str, region_name: str, args) -> int:
     )
 
     if args.scrape and missing:
-        # eventuale limite di scraping (utile per validazione su regioni grandi)
+        # eventuale limite di scraping/fallback costosi (utile su regioni grandi)
+        effective_limit = _effective_expensive_limit(len(comuni), args.scrape_limit)
         to_scrape = missing
         skipped: list = []
-        if args.scrape_limit and args.scrape_limit > 0 and len(missing) > args.scrape_limit:
-            to_scrape = missing[: args.scrape_limit]
-            skipped = missing[args.scrape_limit :]
-            print(
-                f"[4/4] Fallback scraping limitato ai primi {len(to_scrape)} comuni "
-                f"(altri {len(skipped)} segnati NON TROVATO)."
-            )
+        if effective_limit and len(missing) > effective_limit:
+            to_scrape = missing[:effective_limit]
+            skipped = missing[effective_limit:]
+            if args.scrape_limit and args.scrape_limit > 0:
+                print(
+                    f"[4/4] Fallback scraping limitato ai primi {len(to_scrape)} comuni "
+                    f"(altri {len(skipped)} segnati NON TROVATO)."
+                )
+            else:
+                print(
+                    f"[4/4] Regione ampia: limito automaticamente i fallback costosi ai primi "
+                    f"{len(to_scrape)} comuni (altri {len(skipped)} segnati NON TROVATO)."
+                )
         else:
             print(
                 f"[4/4] Fallback scraping per {len(to_scrape)} comuni senza PEC ufficiale dedicata "
@@ -542,36 +561,28 @@ def _run(region_code: str, region_name: str, args) -> int:
                     print(
                         f"      Fonte poliziamunicipale.it per {len(remaining)} comuni residui..."
                     )
-                    pm_finder = PoliziaMunicipaleFinder(timeout=max(8, int(args.timeout)))
-                    try:
-                        show_tqdm_pm = sys.stderr.isatty()
-                        iterable_pm = (
-                            tqdm(remaining, desc="PM source", unit="comune")
-                            if show_tqdm_pm
-                            else remaining
-                        )
-                        for idx, c_pm in enumerate(iterable_pm, start=1):
-                            site = site_by_istat.get(c_pm.codice_istat, "")
-                            host = ""
-                            if site:
-                                u = site if site.startswith("http") else "https://" + site
-                                host = urlparse(u).netloc.lstrip("www.")
+                    pm_workers = min(max(1, args.workers), 4)
 
+                    def _pm_one(c_pm):
+                        site = site_by_istat.get(c_pm.codice_istat, "")
+                        host = ""
+                        if site:
+                            u = site if site.startswith("http") else "https://" + site
+                            host = urlparse(u).netloc.lstrip("www.")
+                        pm_finder = PoliziaMunicipaleFinder(timeout=max(8, int(args.timeout)))
+                        try:
                             pec, mail, _source = pm_finder.search_polizia_locale(
                                 c_pm.nome, c_pm.provincia, strict_pl_local=args.strict
                             )
-                            # registra il link alla scheda PM anche se non ci sono email,
-                            # così possiamo aprirla per ispezione manuale quando il
-                            # risultato finale è "NON TROVATO".
                             if _source:
                                 pm_links[c_pm.codice_istat] = _source
-                            # Se non troviamo caselle PL-specifiche, proviamo un fallback
-                            # che prende la mail presente su poliziamunicipale.it/comune/
-                            # (ma esclude reparti non rilevanti come anagrafe/ragioneria).
                             if (not pec and not mail) and _source:
                                 try:
                                     pec_fb, mail_fb, _ = pm_finder.search_polizia_locale(
-                                        c_pm.nome, c_pm.provincia, strict_pl_local=False, allow_non_pl_fallback=True
+                                        c_pm.nome,
+                                        c_pm.provincia,
+                                        strict_pl_local=False,
+                                        allow_non_pl_fallback=True,
                                     )
                                     if pec_fb or mail_fb:
                                         pec |= pec_fb
@@ -581,17 +592,22 @@ def _run(region_code: str, region_name: str, args) -> int:
                             if host:
                                 pec = {e for e in pec if _domain_ok(e, host)}
                                 mail = {e for e in mail if _domain_ok(e, host)}
-
                             pec, mail = _accept_verified_web_result(c_pm, pec, mail)
+                            return c_pm, pec, mail, _source
+                        finally:
+                            pm_finder.close()
 
+                    with ThreadPoolExecutor(max_workers=pm_workers) as pool:
+                        futures = [pool.submit(_pm_one, c_pm) for c_pm in remaining]
+                        for fut in tqdm(
+                            as_completed(futures),
+                            total=len(futures),
+                            desc="PM source",
+                            unit="comune",
+                        ):
+                            c_pm, pec, mail, _source = fut.result()
                             if pec or mail:
-                                # salva anche la fonte (scheda PM) per permettere un click rapido
                                 web_results[c_pm.codice_istat] = (pec, mail, _source)
-
-                            if not show_tqdm_pm and (idx % 5 == 0 or idx == len(remaining)):
-                                print(f"      PM source: {idx}/{len(remaining)}")
-                    finally:
-                        pm_finder.close()
                 except Exception as e:
                     print(f"      Avviso: fonte poliziamunicipale.it non disponibile ({e})")
 

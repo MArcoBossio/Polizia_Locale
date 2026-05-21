@@ -95,6 +95,48 @@ BRAVE_API_KEY=tuo_token_brave
 Se la variabile è assente lo script continuerà a funzionare utilizzando
 Playwright+Bing (se installato), con comportamento invariato.
 
+### Dashboard web
+
+Il repository include anche una piccola dashboard web che legge i file JSON già
+esportati nella cartella `./output/` e li rende consultabili da browser.
+
+Flusso consigliato:
+
+1. Esegui il motore CLI per generare un output.
+2. Avvia il backend FastAPI in `backend/server.py`.
+3. Avvia il frontend Vite in `frontend/` con `npm install` e `npm run dev`.
+
+In alternativa, dalla root del progetto puoi avviare entrambi con un solo comando:
+
+```bash
+python start_dashboard.py
+```
+
+Su Windows puoi usare anche il wrapper PowerShell:
+
+```powershell
+.\start_dashboard.ps1
+```
+
+Oppure il batch classico:
+
+```bat
+start_dashboard.bat
+```
+
+Lo script attende che backend e frontend siano pronti e apre il browser in
+automatico; se serve puoi disattivarlo con `--no-open-browser`.
+
+```bash
+python start_dashboard.py --no-open-browser
+```
+
+La dashboard mostra copertura, confidence media, filtri locali e link di
+download per JSON/CSV/XLSX.
+
+Per puntare il frontend a un backend diverso, imposta `VITE_BACKEND_URL` nel
+file `.env` del frontend.
+
 ## Utilizzo
 
 Tre modalità:
@@ -121,6 +163,9 @@ python run.py --list-regions
 --no-strict             Accetta anche PEC generiche del Comune da IndicePA
 --workers N             Thread paralleli (default 8)
 --scrape-limit N        Limita lo scraping ai primi N comuni mancanti
+                        Se non specificato, sui regioni grandi i fallback più
+                        costosi vengono ridotti automaticamente per evitare
+                        esecuzioni che non terminano.
 --include-comune-pec    Includi la PEC istituzionale del Comune come
                         fallback per i comuni senza PL-specifica (OFF di default)
 --timeout SEC           Timeout HTTP scraping (default 15)
@@ -215,29 +260,6 @@ responsabilmente.
         |
 | sito / pagina        | Sito comunale e pagina dove è stato trovato (scraping) |
 | fonte                | "IndicePA", "ScrapingSitoComune" o "NON TROVATO"       |
-
-## Cache
-
-I dataset ISTAT e IndicePA vengono scaricati una sola volta e tenuti in cache
-per 24 ore (7 giorni per ISTAT) in:
-
-```
-~/.cache/polizia_locale/
-```
-
-Puoi sovrascrivere la cartella con la variabile d'ambiente
-`POLIZIA_LOCALE_CACHE`.
-
-## Note legali
-
-I dataset di IndicePA sono open data pubblicati da AgID. Le PEC delle PA
-italiane sono pubbliche per legge. Lo scraping dei siti comunali utilizza
-contenuti pubblici e introduce una pausa tra le richieste; usalo
-responsabilmente.
-
-## Licenza
-
-MIT — usa liberamente, riconoscendo la paternità.
 
 ## Contributi
 
