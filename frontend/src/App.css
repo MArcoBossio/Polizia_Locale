@@ -293,6 +293,27 @@
     border-radius: 4px;
     margin-top: 6px;
 }
+.job-progress-bar.indeterminate {
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(90deg, rgba(79,70,229,0.12), rgba(6,182,212,0.12));
+}
+.job-progress-bar.indeterminate::after {
+    content: "";
+    position: absolute;
+    left: -40%;
+    top: 0;
+    height: 100%;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, rgba(79,70,229,0.9), rgba(6,182,212,0.9), transparent);
+    animation: progress-slide 1.2s linear infinite;
+    border-radius: 4px;
+}
+@keyframes progress-slide {
+    0% { left: -40%; }
+    100% { left: 120%; }
+}
 .job-log-card {
     margin-top: 18px;
     background: #0b1220;

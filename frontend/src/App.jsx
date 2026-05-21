@@ -358,8 +358,18 @@ function App() {
               {job ? <span className="job-status">{job.status}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}</span> : null}
               {job ? (
                 <div className="job-progress">
-                  <div className="job-progress-bar" style={{ width: `${job.progress || 0}%` }} />
-                  <small>{job.progress ? `${job.progress}%` : ""}</small>
+                  {/* determinate when progress > 0, otherwise show an indeterminate animated bar */}
+                  {job.progress && job.progress > 0 ? (
+                    <>
+                      <div className="job-progress-bar" style={{ width: `${job.progress}%` }} />
+                      <small>{job.progress ? `${job.progress}%` : ""}</small>
+                    </>
+                  ) : (
+                    <>
+                      <div className="job-progress-bar indeterminate" />
+                      <small>Avviato…</small>
+                    </>
+                  )}
                 </div>
               ) : null}
             </div>
