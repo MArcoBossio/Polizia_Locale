@@ -7,6 +7,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from .html_tools import iter_anchors
+
 
 def _same_host(a: str, b: str) -> bool:
     ha = urlparse(a).netloc.lower().lstrip("www.")
@@ -82,10 +84,9 @@ def verify_emails_on_site(
             break
 
         try:
-            soup = BeautifulSoup(html, "html.parser")
             priority, normal = [], []
-            for a in soup.find_all("a", href=True)[:120]:
-                href = a.get("href", "").strip()
+            for href, text in list(iter_anchors(html))[:120]:
+                href = href.strip()
                 if not href:
                     continue
                 nxt = urljoin(r.url, href)
@@ -93,7 +94,7 @@ def verify_emails_on_site(
                     continue
                 if not _same_host(base, nxt):
                     continue
-                txt = (a.get_text(" ", strip=True) + " " + href).lower()
+                txt = (text + " " + href).lower()
                 if any(k in txt for k in kw):
                     priority.append(nxt)
                 else:

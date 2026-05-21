@@ -95,8 +95,21 @@ def test_scrape_polizia_locale_falls_back_on_broad_links(monkeypatch):
 
     monkeypatch.setattr(scraper, "_new_session", lambda: fake_session)
     monkeypatch.setattr(scraper, "find_comune_website", lambda *args, **kwargs: homepage)
-    monkeypatch.setattr(scraper, "_browser_rendered_text", lambda *args, **kwargs: "")
-    monkeypatch.setattr(scraper, "_ocr_page_screenshot", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        scraper,
+        "_browser_rendered_pairs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("browser fallback should not run on generic homepage")),
+    )
+    monkeypatch.setattr(
+        scraper,
+        "_browser_rendered_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("browser fallback should not run on generic homepage")),
+    )
+    monkeypatch.setattr(
+        scraper,
+        "_ocr_page_screenshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ocr fallback should not run on generic homepage")),
+    )
 
     result = scraper.scrape_polizia_locale(
         "Prato",

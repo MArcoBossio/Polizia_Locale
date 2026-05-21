@@ -28,3 +28,4 @@ emergentintegrations==0.1.0
 pillow>=10.0.0
 pytesseract>=0.3.10
 pdf2image>=1.17.0
+selectolax>=0.4.9

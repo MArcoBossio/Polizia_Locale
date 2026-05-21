@@ -26,6 +26,7 @@ import threading
 from contextlib import suppress
 
 from .indicepa import is_pl_specific_email
+from .html_tools import iter_images
 from .scraper import EMAIL_RE, _is_pec
 from .utils import is_likely_personal_email
 from bs4 import BeautifulSoup
@@ -153,8 +154,7 @@ def _ocr_images_from_html(html: str, base_url: str = "") -> str:
             im = im.convert("RGB")
         return im
 
-    for img in soup.find_all("img")[:3]:
-        src = img.get("src")
+    for src, _alt in list(iter_images(html))[:3]:
         if not src:
             continue
         try:

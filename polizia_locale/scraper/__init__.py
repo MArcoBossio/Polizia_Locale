@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import heapq
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -23,16 +24,17 @@ import unicodedata
 import requests
 from bs4 import BeautifulSoup
 
-from .browser_render import (
+from ..browser_render import (
     browser_rendered_pairs as _browser_rendered_pairs,
     browser_rendered_text as _browser_rendered_text,
     ocr_page_screenshot as _ocr_page_screenshot,
     render_page_snapshot as _render_page_snapshot,
 )
-from .html_tools import html_text, iter_anchors
-from .normalization import similarity
-from .utils import USER_AGENT
-from .utils import is_likely_personal_email
+from ..html_tools import html_text, iter_anchors
+from ..normalization import similarity
+from ..utils import USER_AGENT
+from ..utils import is_likely_personal_email
+from ..persistent_cache import SQLiteCache
 
 EMAIL_RE = re.compile(
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
@@ -309,6 +311,45 @@ def _get_cached_page(
     except Exception:
         result = (0, url, "")
     cache[url] = result
+    return result
+
+
+def _get_page(
+    session: requests.Session,
+    url: str,
+    timeout: tuple[int, int],
+    cache: dict[str, tuple[int, str, str]],
+    persistent: SQLiteCache | None = None,
+    ttl: int = 7 * 24 * 3600,
+) -> tuple[int, str, str]:
+    """Fetch page using per-run cache and optional persistent SQLite cache.
+
+    persistent.get() returns (status, final_url, text, ts). We accept cached
+    entries younger than `ttl` seconds.
+    """
+    if url in cache:
+        return cache[url]
+    if persistent is not None:
+        try:
+            row = persistent.get(url)
+            if row is not None:
+                status, final_url, text, ts = row
+                if time.time() - ts < ttl:
+                    cache[url] = (status, final_url, text)
+                    return cache[url]
+        except Exception:
+            pass
+    try:
+        rr = session.get(url, timeout=timeout, allow_redirects=True)
+        result = (rr.status_code, rr.url, rr.text)
+    except Exception:
+        result = (0, url, "")
+    cache[url] = result
+    if persistent is not None:
+        try:
+            persistent.set(url, result[0], result[1], result[2])
+        except Exception:
+            pass
     return result
 
 
@@ -887,13 +928,19 @@ def _enqueue_candidate_pages(
     min_score: int = 1,
     limit: int = 16,
 ) -> None:
+    # `frontier` is used as a min-heap with (-score, url) so higher scores come first.
     for url, score in _candidate_links(html, base, page_is_pl=page_is_pl):
         if score < min_score or url in seen:
             continue
         seen.add(url)
-        frontier.append((score, url))
-        if len(frontier) >= limit:
-            break
+        if len(frontier) < limit:
+            heapq.heappush(frontier, (-score, url))
+        else:
+            # If heap full and this candidate has higher score than the smallest, replace
+            smallest_score, _ = frontier[0]
+            # smallest_score is negative, so compare -score > smallest_score
+            if -score > smallest_score:
+                heapq.heapreplace(frontier, (-score, url))
 
 
 def _maybe_extract_pdfs(
@@ -911,7 +958,7 @@ def _maybe_extract_pdfs(
 ) -> None:
     if not pdf_extract or (pec_all or mail_all):
         return
-    from .pdf_extractor import extract_emails_from_pdf_url, find_pdf_links, find_pdf_links_broad
+    from ..pdf_extractor import extract_emails_from_pdf_url, find_pdf_links, find_pdf_links_broad
 
     pdfs = list(
         dict.fromkeys(
@@ -951,7 +998,7 @@ def scrape_polizia_locale(
       3. Apre la homepage e segue i candidate links.
     Si ferma appena trova mail PL-specifiche.
     """
-    from .indicepa import is_pl_specific_email
+    from ..indicepa import is_pl_specific_email
 
     deadline = time.monotonic() + total_budget
     req_timeout = _phase_timeout(timeout)
@@ -1066,11 +1113,12 @@ def scrape_polizia_locale(
     try:
         # 0) Se il chiamante ha passato una pagina ufficio specifica, la visitiamo
         # per prima: molte schede PA espongono i contatti solo lì.
+        persistent_cache = SQLiteCache()
         for url in seed_urls:
             if time.monotonic() > deadline or (pec_all or mail_all):
                 break
             try:
-                status_code, final_url, text = _get_cached_page(session, url, req_timeout, page_cache)
+                status_code, final_url, text = _get_page(session, url, req_timeout, page_cache, persistent_cache)
                 if status_code != 200:
                     continue
                 pages_visited.append(final_url)
@@ -1102,7 +1150,7 @@ def scrape_polizia_locale(
                 if time.monotonic() > deadline or len(sitemap_urls) >= 8:
                     break
                 try:
-                    status_code, _final_url, text = _get_cached_page(session, seed_url, req_timeout, page_cache)
+                    status_code, _final_url, text = _get_page(session, seed_url, req_timeout, page_cache, persistent_cache)
                     if status_code != 200:
                         continue
                     if seed_url.endswith("robots.txt"):
@@ -1124,7 +1172,7 @@ def scrape_polizia_locale(
                     continue
                 seen_sitemaps.add(sitemap_url)
                 try:
-                    status_code, final_url, text = _get_cached_page(session, sitemap_url, req_timeout, page_cache)
+                    status_code, final_url, text = _get_page(session, sitemap_url, req_timeout, page_cache, persistent_cache)
                     if status_code != 200:
                         continue
                     if not any(k in text.lower() for k in ("polizia", "vigili", "municipale", "comando", "sicurezza urbana")):
@@ -1139,7 +1187,7 @@ def scrape_polizia_locale(
                         if time.monotonic() > deadline or (pec_all or mail_all):
                             break
                         try:
-                            status_code2, final_url2, text2 = _get_cached_page(session, u, req_timeout, page_cache)
+                            status_code2, final_url2, text2 = _get_page(session, u, req_timeout, page_cache, persistent_cache)
                             if status_code2 != 200:
                                 continue
                             pages_visited.append(final_url2)
@@ -1157,7 +1205,7 @@ def scrape_polizia_locale(
                     break
                 sub_url = f"{parsed.scheme}://{sub}.{host}/"
                 try:
-                    status_code, final_url, text = _get_cached_page(session, sub_url, heavy_timeout, page_cache)
+                    status_code, final_url, text = _get_page(session, sub_url, heavy_timeout, page_cache, persistent_cache)
                     if status_code != 200:
                         continue
                     pages_visited.append(final_url)
@@ -1170,7 +1218,7 @@ def scrape_polizia_locale(
                                 u = urljoin(final_url, href)
                                 if u.startswith("http"):
                                     try:
-                                        status_code2, final_url2, text2 = _get_cached_page(session, u, heavy_timeout, page_cache)
+                                        status_code2, final_url2, text2 = _get_page(session, u, heavy_timeout, page_cache, persistent_cache)
                                         pages_visited.append(final_url2)
                                         _harvest(text2, url_is_pl=True)
                                         if pec_all or mail_all:
@@ -1185,7 +1233,7 @@ def scrape_polizia_locale(
         home_url = site
         if not (pec_all or mail_all):
             try:
-                status_code, final_url, text = _get_cached_page(session, site, req_timeout, page_cache)
+                status_code, final_url, text = _get_page(session, site, req_timeout, page_cache, persistent_cache)
                 if status_code != 200:
                     raise RuntimeError("homepage fetch failed")
                 pages_visited.append(final_url)
@@ -1199,9 +1247,15 @@ def scrape_polizia_locale(
 
                 fetched_pages = 0
                 while frontier and fetched_pages < 28 and time.monotonic() <= deadline and not (pec_all or mail_all):
-                    frontier.sort(key=lambda item: (-item[0], item[1]))
-                    batch = [url for _score, url in frontier[: min(6, len(frontier))]]
-                    frontier = frontier[min(6, len(frontier)):]
+                    # Pop up to N best candidates from the heap
+                    n = min(6, len(frontier))
+                    batch: list[str] = []
+                    for _ in range(n):
+                        try:
+                            score_neg, url = heapq.heappop(frontier)
+                        except IndexError:
+                            break
+                        batch.append(url)
                     fetched = _fetch_many(session, batch, req_timeout)
                     new_soup_pages: list[tuple[str, str, bool]] = []
                     for origin_url, status_code, final_url, text in fetched:
@@ -1240,7 +1294,7 @@ def scrape_polizia_locale(
             try:
                 soup = BeautifulSoup(home_html or "", "html.parser") if home_html else BeautifulSoup("", "html.parser")
                 if not home_html:
-                    status_code, final_url, text = _get_cached_page(session, site, req_timeout, page_cache)
+                    status_code, final_url, text = _get_page(session, site, req_timeout, page_cache, persistent_cache)
                     if status_code != 200:
                         raise RuntimeError("homepage fetch failed")
                     soup = BeautifulSoup(text, "html.parser")
