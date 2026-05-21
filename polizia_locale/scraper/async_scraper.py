@@ -3,6 +3,7 @@ import heapq
 from typing import List, Tuple, Optional
 
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 from . import (
     _extract_emails_with_context,
@@ -57,6 +58,15 @@ async def _get_page_async(
         except Exception:
             pass
     return result
+
+
+# Shared threadpool for running synchronous helpers to avoid unbounded threads
+_EXECUTOR = ThreadPoolExecutor(max_workers=6)
+
+
+async def _run_in_executor(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_EXECUTOR, func, *args)
 
 
 async def _fetch_many_async(session: aiohttp.ClientSession, urls: List[str], timeout: int) -> List[Tuple[str, int, str, str]]:
@@ -133,13 +143,13 @@ async def async_scrape_polizia_locale(
         for url in seed_urls:
             if time.monotonic() > deadline or (pec_all or mail_all):
                 break
-            status_code, final_url, text = await _get_page_async(session, url, req_timeout, page_cache, persistent_cache)
+                status_code, final_url, text = await _get_page_async(session, url, req_timeout, page_cache, persistent_cache)
             if status_code != 200:
                 continue
             pages_visited.append(final_url)
-            pairs = await asyncio.to_thread(_extract_emails_with_context, text)
+                pairs = await _run_in_executor(_extract_emails_with_context, text)
             for e, ctx in pairs:
-                await asyncio.to_thread(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url), "page_html")
+                    await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url), "page_html")
 
         # 1) direct paths
         if not (pec_all or mail_all):
@@ -151,9 +161,9 @@ async def async_scrape_polizia_locale(
                 if not status_code or not text:
                     continue
                 pages_visited.append(final_url)
-                pairs = await asyncio.to_thread(_extract_emails_with_context, text)
+                pairs = await _run_in_executor(_extract_emails_with_context, text)
                 for e, ctx in pairs:
-                    await asyncio.to_thread(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url) or _path_is_polizia(origin_url), "page_html")
+                    await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url) or _path_is_polizia(origin_url), "page_html")
 
         # 1b) sitemaps
         if not (pec_all or mail_all):
@@ -199,9 +209,9 @@ async def async_scrape_polizia_locale(
                     if status_code2 != 200:
                         continue
                     pages_visited.append(final_url2)
-                    pairs = await asyncio.to_thread(_extract_emails_with_context, text2)
+                    pairs = await _run_in_executor(_extract_emails_with_context, text2)
                     for e, ctx in pairs:
-                        await asyncio.to_thread(_accept_email_sync, e, ctx, text2, _path_is_polizia(final_url2) or _path_is_polizia(u), "page_html")
+                        await _run_in_executor(_accept_email_sync, e, ctx, text2, _path_is_polizia(final_url2) or _path_is_polizia(u), "page_html")
 
         # 2) subdomains
         if not (pec_all or mail_all):
@@ -213,11 +223,11 @@ async def async_scrape_polizia_locale(
                 if status_code != 200:
                     continue
                 pages_visited.append(final_url)
-                pairs = await asyncio.to_thread(_extract_emails_with_context, text)
+                pairs = await _run_in_executor(_extract_emails_with_context, text)
                 for e, ctx in pairs:
-                    await asyncio.to_thread(_accept_email_sync, e, ctx, text, True, "page_html")
+                    await _run_in_executor(_accept_email_sync, e, ctx, text, True, "page_html")
                 if not (pec_all or mail_all):
-                    anchors = await asyncio.to_thread(lambda: list(__import__("itertools").islice(_candidate_links(text, final_url, True), 20)))
+                    anchors = await _run_in_executor(lambda: list(__import__("itertools").islice(_candidate_links(text, final_url, True), 20)))
                     for href, _score in anchors:
                         u = urljoin(final_url, href)
                         if not u.startswith("http"):
@@ -226,24 +236,24 @@ async def async_scrape_polizia_locale(
                         if status_code2 != 200:
                             continue
                         pages_visited.append(final_url2)
-                        pairs2 = await asyncio.to_thread(_extract_emails_with_context, text2)
+                        pairs2 = await _run_in_executor(_extract_emails_with_context, text2)
                         for e, ctx in pairs2:
-                            await asyncio.to_thread(_accept_email_sync, e, ctx, text2, True, "page_html")
+                            await _run_in_executor(_accept_email_sync, e, ctx, text2, True, "page_html")
 
         # 3) homepage + frontier BFS
         home_html = ""
         home_url = site
         if not (pec_all or mail_all):
-            status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
+                status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
             if status_code == 200:
                 pages_visited.append(final_url)
                 home_html = text
                 home_url = final_url
-                await asyncio.to_thread(lambda: _note("homepage"))
+                    await _run_in_executor(lambda: _note("homepage"))
 
                 frontier: list[tuple[int, str]] = []
                 seen_frontier: set[str] = {final_url, site}
-                await asyncio.to_thread(_enqueue_candidate_pages, frontier, text, base, False, seen_frontier, 1, max(16, max_candidates * 6))
+                await _run_in_executor(_enqueue_candidate_pages, frontier, text, base, False, seen_frontier, 1, max(16, max_candidates * 6))
 
                 fetched_pages = 0
                 while frontier and fetched_pages < 28 and time.monotonic() <= deadline and not (pec_all or mail_all):
@@ -266,16 +276,16 @@ async def async_scrape_polizia_locale(
                         fetched_pages += 1
                         pages_visited.append(final_url)
                         is_pl = _path_is_polizia(final_url) or _path_is_polizia(origin_url)
-                        pairs = await asyncio.to_thread(_extract_emails_with_context, text)
+                        pairs = await _run_in_executor(_extract_emails_with_context, text)
                         for e, ctx in pairs:
-                            await asyncio.to_thread(_accept_email_sync, e, ctx, text, is_pl, "page_html")
+                            await _run_in_executor(_accept_email_sync, e, ctx, text, is_pl, "page_html")
                         new_soup_pages.append((final_url, text, is_pl))
                         if is_pl:
-                            await asyncio.to_thread(_maybe_extract_pdfs, None, text, final_url, base, deadline, req_timeout, strict_pl_local, pdf_extract, _accept_email_sync, pec_all, mail_all)
+                            await _run_in_executor(_maybe_extract_pdfs, None, text, final_url, base, deadline, req_timeout, strict_pl_local, pdf_extract, _accept_email_sync, pec_all, mail_all)
                     for page_url, text, is_pl in new_soup_pages:
                         if time.monotonic() > deadline or (pec_all or mail_all):
                             break
-                        await asyncio.to_thread(_enqueue_candidate_pages, frontier, text, base, is_pl, seen_frontier, 2 if is_pl else 1, 40)
+                        await _run_in_executor(_enqueue_candidate_pages, frontier, text, base, is_pl, seen_frontier, 2 if is_pl else 1, 40)
 
         # 4) broad fallback
         if not (pec_all or mail_all):
@@ -284,7 +294,7 @@ async def async_scrape_polizia_locale(
                 if status_code == 200:
                     home_html = text
                     home_url = final_url
-            broad_candidates = await asyncio.to_thread(_broad_candidate_links, home_html or "", base, max(4, int(max_candidates) * 2), True)
+            broad_candidates = await _run_in_executor(_broad_candidate_links, home_html or "", base, max(4, int(max_candidates) * 2), True)
             if broad_candidates or strong_pl_signal_seen:
                 fetched_broad = await _fetch_many_async(session, broad_candidates, req_timeout)
                 for origin_url, status_code, final_url, text in fetched_broad:
@@ -293,11 +303,11 @@ async def async_scrape_polizia_locale(
                     if not status_code or not text:
                         continue
                     pages_visited.append(final_url)
-                    pairs = await asyncio.to_thread(_extract_emails_with_context, text)
+                    pairs = await _run_in_executor(_extract_emails_with_context, text)
                     for e, ctx in pairs:
-                        await asyncio.to_thread(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url) or _path_is_polizia(origin_url), "page_html")
+                        await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url) or _path_is_polizia(origin_url), "page_html")
                     if _path_is_polizia(final_url) and pdf_extract and not (pec_all or mail_all):
-                        await asyncio.to_thread(_maybe_extract_pdfs, None, text, final_url, base, deadline, req_timeout, strict_pl_local, pdf_extract, _accept_email_sync, pec_all, mail_all)
+                        await _run_in_executor(_maybe_extract_pdfs, None, text, final_url, base, deadline, req_timeout, strict_pl_local, pdf_extract, _accept_email_sync, pec_all, mail_all)
 
     if not pec_all and not mail_all:
         return None
