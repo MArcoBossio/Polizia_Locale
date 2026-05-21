@@ -20,8 +20,11 @@ from . import (
     EMAIL_RE,
     ScrapeResult,
     find_comune_website,
+    _score_email_context,
+    _is_pec,
 )
 from ..persistent_cache import SQLiteCache
+from ..utils import is_likely_personal_email
 from urllib.parse import urlparse, urljoin
 import time
 
@@ -127,10 +130,131 @@ async def async_scrape_polizia_locale(
         matched_by.add(kind)
 
     def _accept_email_sync(email: str, ctx: str, html: str, page_is_polizia: bool, source_kind: str) -> None:
-        # reuse synchronous acceptance logic from scraper
-        from . import _accept_email as _accept_email_impl
+        ctx_score, reasons = _score_email_context(html, email, ctx)
+        local = email.split("@")[0].lower()
+        is_pl_local = any(
+            k in local
+            for k in (
+                "polizialocale",
+                "poliziamunicipale",
+                "vigili",
+                "comandopm",
+                "comandopl",
+                "pol.locale",
+                "pol.municipale",
+                "pm.",
+                "pl.",
+            )
+        )
+        is_pl_ctx = any(
+            k in ctx.lower()
+            for k in (
+                "polizia locale",
+                "polizia municipale",
+                "polizia urbana",
+                "vigili urbani",
+                "comando",
+                "corpo di polizia",
+                "corpo unico",
+                "servizio associato di polizia",
+                "servizio associato di vigilanza",
+                "ufficio vigilanza",
+                "police locale",
+                "service de police",
+                "service de police locale",
+                "union des communes",
+                "municipalite",
+                "municipalità",
+                "vigiles",
+                "ortspolizei",
+                "gemeindepolizei",
+                "polizeiamt",
+            )
+        )
+        generic_local_parts = {
+            "info",
+            "segreteria",
+            "protocollo",
+            "ufficio",
+            "amministrazione",
+            "contatti",
+            "contact",
+            "help",
+            "service",
+            "webmaster",
+            "noreply",
+            "postmaster",
+        }
+        if strict_pl_local:
+            if not is_pl_local and local in generic_local_parts:
+                return
+            if not (is_pl_local or page_is_polizia or is_pl_ctx or ctx_score >= 4):
+                return
+            if is_likely_personal_email(email) and not (is_pl_local or page_is_polizia or ctx_score >= 5):
+                return
+        else:
+            if not (page_is_polizia or is_pl_local or is_pl_ctx or ctx_score >= 2):
+                return
+            if is_likely_personal_email(email) and not (is_pl_local or page_is_polizia or ctx_score >= 4):
+                return
 
-        _accept_email_impl(email, ctx, html, page_is_polizia, source_kind)
+        if local in {"noreply", "no-reply", "webmaster", "postmaster"}:
+            return
+        if _is_pec(email, ctx):
+            pec_all.add(email)
+        else:
+            mail_all.add(email)
+        for reason in reasons:
+            _note(reason)
+        _note(source_kind)
+
+    def _note_strong_signal(html: str, page_url: str, page_is_polizia: bool) -> None:
+        nonlocal strong_pl_signal_seen
+        if page_is_polizia or _path_is_polizia(page_url):
+            strong_pl_signal_seen = True
+            return
+        normalized = html.lower()
+        if any(
+            k in normalized
+            for k in (
+                "polizia locale",
+                "polizia municipale",
+                "vigili urbani",
+                "comando",
+                "corpo di polizia",
+                "servizio associato di polizia",
+            )
+        ):
+            strong_pl_signal_seen = True
+
+    def _harvest(html: str, url_is_pl: bool, page_url: str = "") -> None:
+        found_before = bool(pec_all or mail_all)
+        _note_strong_signal(html, page_url, url_is_pl)
+        pairs = _extract_emails_with_context(html)
+        for e, ctx in pairs:
+            _accept_email_sync(e, ctx, html, url_is_pl, "page_html")
+
+        if (not found_before) and not (pec_all or mail_all) and page_url:
+            if _should_try_browser_fallback(html, page_url, site_root=site, url_is_pl=url_is_pl):
+                rendered_pairs = _browser_rendered_pairs(page_url)
+                for e, ctx in rendered_pairs:
+                    _accept_email_sync(e, ctx, ctx, url_is_pl, "js_render")
+
+                if not rendered_pairs:
+                    rendered_text = _browser_rendered_text(page_url)
+                    if rendered_text:
+                        for m in EMAIL_RE.finditer(rendered_text):
+                            e = m.group(0)
+                            ctx = rendered_text[max(0, m.start() - 80):m.end() + 80]
+                            _accept_email_sync(e, ctx, rendered_text, url_is_pl, "js_render")
+
+                if not (pec_all or mail_all):
+                    ocr_text = _ocr_page_screenshot(page_url)
+                    if ocr_text:
+                        for m in EMAIL_RE.finditer(ocr_text):
+                            e = m.group(0)
+                            ctx = ocr_text[max(0, m.start() - 80):m.end() + 80]
+                            _accept_email_sync(e, ctx, ocr_text, url_is_pl, "ocr")
 
     async with aiohttp.ClientSession() as session:
         # 0) seed pages
@@ -139,6 +263,9 @@ async def async_scrape_polizia_locale(
             parsed_hint = urlparse(site_hint if site_hint.startswith(("http://", "https://")) else "https://" + site_hint)
             if parsed_hint.netloc == parsed.netloc and parsed_hint.path not in ("", "/"):
                 seed_urls.append(parsed_hint.geturl())
+
+        home_html = ""
+        home_url = site
 
         for url in seed_urls:
             if time.monotonic() > deadline or (pec_all or mail_all):
@@ -150,6 +277,14 @@ async def async_scrape_polizia_locale(
             pairs = await _run_in_executor(_extract_emails_with_context, text)
             for e, ctx in pairs:
                 await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url), "page_html")
+
+        if not (pec_all or mail_all):
+            status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
+            if status_code == 200:
+                pages_visited.append(final_url)
+                home_html = text
+                home_url = final_url
+                _harvest(text, url_is_pl=False, page_url=final_url)
 
         # 1) direct paths
         if not (pec_all or mail_all):
@@ -241,9 +376,7 @@ async def async_scrape_polizia_locale(
                             await _run_in_executor(_accept_email_sync, e, ctx, text2, True, "page_html")
 
         # 3) homepage + frontier BFS
-        home_html = ""
-        home_url = site
-        if not (pec_all or mail_all):
+        if not home_html and not (pec_all or mail_all):
             status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
             if status_code == 200:
                 pages_visited.append(final_url)

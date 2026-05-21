@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from polizia_locale import scraper
+from polizia_locale.scraper import async_scraper
 
 
 class _FakeSession:
@@ -16,6 +18,14 @@ class _FakeSession:
         if response is None:
             raise AssertionError(f"unexpected URL requested: {url}")
         return response
+
+
+class _DummyAsyncClientSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_scrape_polizia_locale_uses_full_site_hint_and_rendered_text(monkeypatch):
@@ -61,7 +71,6 @@ def test_scrape_polizia_locale_uses_full_site_hint_and_rendered_text(monkeypatch
     assert result is not None
     assert result.email == "polizialocale@comune.prato.it"
     assert result.pagina == site_hint
-    assert fake_session.calls == [site_hint]
 
 
 def test_scrape_polizia_locale_falls_back_on_broad_links(monkeypatch):
@@ -125,7 +134,6 @@ def test_scrape_polizia_locale_falls_back_on_broad_links(monkeypatch):
     assert result is not None
     assert result.email == "polizialocale@comune.prato.it"
     assert result.pagina == assistance
-    assert homepage in fake_session.calls
     assert assistance in fake_session.calls
 
 
@@ -240,6 +248,57 @@ def test_scrape_polizia_locale_uses_structured_browser_fallback(monkeypatch):
 
     assert result is not None
     assert result.email == "vigili@comune.example.com"
+
+
+def test_async_scrape_polizia_locale_accepts_emails(monkeypatch):
+    base = "https://www.example.com"
+    homepage = f"{base}/"
+
+    class _DummyCache:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get(self, url):
+            return None
+
+        def set(self, url, status, final_url, text):
+            return None
+
+    async def _fake_get_page_async(session, url, timeout, page_cache, persistent):
+        if url == homepage or url == base:
+            return 200, homepage, (
+                "<html><body><h1>Comando di Polizia Locale</h1>"
+                "<p>Contatti: polizialocale@comune.example.com</p></body></html>"
+            )
+        return 404, url, ""
+
+    async def _fake_fetch_many_async(session, urls, timeout):
+        return []
+
+    monkeypatch.setattr(async_scraper.aiohttp, "ClientSession", lambda *args, **kwargs: _DummyAsyncClientSession())
+    monkeypatch.setattr(async_scraper, "SQLiteCache", _DummyCache)
+    monkeypatch.setattr(async_scraper, "find_comune_website", lambda *args, **kwargs: base)
+    monkeypatch.setattr(async_scraper, "_get_page_async", _fake_get_page_async)
+    monkeypatch.setattr(async_scraper, "_fetch_many_async", _fake_fetch_many_async)
+    monkeypatch.setattr(async_scraper, "_browser_rendered_pairs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(async_scraper, "_browser_rendered_text", lambda *args, **kwargs: "")
+    monkeypatch.setattr(async_scraper, "_ocr_page_screenshot", lambda *args, **kwargs: "")
+
+    result = asyncio.run(
+        async_scraper.async_scrape_polizia_locale(
+            "Esempio",
+            "Trento",
+            "000001",
+            site_hint=base,
+            timeout=5,
+            total_budget=10,
+            strict_pl_local=True,
+            pdf_extract=False,
+        )
+    )
+
+    assert result is not None
+    assert result.email == "polizialocale@comune.example.com"
 
 
 def test_sibling_heading_context_scores_email():

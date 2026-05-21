@@ -1202,4 +1202,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        # Mostra lo stacktrace completo per facilitare il debug di exit code non-zero
+        import traceback
+
+        traceback.print_exc()
+        # Esci con codice 1 per rendere evidente l'errore
+        sys.exit(1)

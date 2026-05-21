@@ -56,14 +56,23 @@ def export_all(rows: list[dict], out_dir: Path, basename: str) -> dict:
 
     xlsx_path = out_dir / f"{basename}.xlsx"
     df = pd.DataFrame(normalized, columns=FIELDS)
-    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Polizia Locale")
-        # auto-fit larghezza colonne
-        ws = writer.sheets["Polizia Locale"]
-        for i, col in enumerate(FIELDS, start=1):
-            max_len = max([len(str(col))] + [len(str(v)) for v in df[col].head(500)])
-            ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(
-                max_len + 2, 60
-            )
+    try:
+        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Polizia Locale")
+            # auto-fit larghezza colonne
+            ws = writer.sheets["Polizia Locale"]
+            for i, col in enumerate(FIELDS, start=1):
+                max_len = max([len(str(col))] + [len(str(v)) for v in df[col].head(500)])
+                ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(
+                    max_len + 2, 60
+                )
+    except Exception as e:
+        # Non fallire l'intero processo solo per la generazione dell'XLSX.
+        # Registriamo il problema e lasciamo che CSV/JSON restino disponibili.
+        try:
+            print(f"Avviso: impossibile generare XLSX ({e})")
+        except Exception:
+            pass
+        xlsx_path = None
 
-    return {"csv": str(csv_path), "json": str(json_path), "xlsx": str(xlsx_path)}
+    return {"csv": str(csv_path), "json": str(json_path), "xlsx": str(xlsx_path) if xlsx_path else ""}
