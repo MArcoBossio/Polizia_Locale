@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -20,10 +22,17 @@ class SQLiteCache:
             ttl_seconds: optional TTL for cached pages in seconds. If None, entries never expire by TTL.
         """
         if db_path is None:
-            base = Path(__file__).resolve().parents[1]
-            cache_dir = base / "cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            db_path = cache_dir / "polizia_locale_cache.sqlite"
+            # Allow override via env var for CI/tests or custom locations.
+            env_path = os.environ.get("POLIZIA_LOCALE_CACHE_PATH")
+            if env_path:
+                db_path = Path(env_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                # Default to a per-user cache directory. This keeps cache out of
+                # the repository and available across runs for performance.
+                base = Path.home() / ".polizia_locale_cache"
+                base.mkdir(parents=True, exist_ok=True)
+                db_path = base / "polizia_locale_cache.sqlite"
         self._db_path = str(db_path)
         # TTL in seconds (None => no TTL)
         self.ttl_seconds = int(ttl_seconds) if ttl_seconds is not None else None
