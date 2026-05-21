@@ -143,13 +143,13 @@ async def async_scrape_polizia_locale(
         for url in seed_urls:
             if time.monotonic() > deadline or (pec_all or mail_all):
                 break
-                status_code, final_url, text = await _get_page_async(session, url, req_timeout, page_cache, persistent_cache)
+            status_code, final_url, text = await _get_page_async(session, url, req_timeout, page_cache, persistent_cache)
             if status_code != 200:
                 continue
             pages_visited.append(final_url)
-                pairs = await _run_in_executor(_extract_emails_with_context, text)
+            pairs = await _run_in_executor(_extract_emails_with_context, text)
             for e, ctx in pairs:
-                    await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url), "page_html")
+                await _run_in_executor(_accept_email_sync, e, ctx, text, _path_is_polizia(final_url), "page_html")
 
         # 1) direct paths
         if not (pec_all or mail_all):
@@ -244,12 +244,12 @@ async def async_scrape_polizia_locale(
         home_html = ""
         home_url = site
         if not (pec_all or mail_all):
-                status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
+            status_code, final_url, text = await _get_page_async(session, site, req_timeout, page_cache, persistent_cache)
             if status_code == 200:
                 pages_visited.append(final_url)
                 home_html = text
                 home_url = final_url
-                    await _run_in_executor(lambda: _note("homepage"))
+                await _run_in_executor(lambda: _note("homepage"))
 
                 frontier: list[tuple[int, str]] = []
                 seen_frontier: set[str] = {final_url, site}
