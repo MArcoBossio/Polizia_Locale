@@ -7,6 +7,17 @@ name = "polizia_locale"
 version = "1.0.0"
 description = "PEC & Email Finder for Polizia Locale/Municipale in Italy"
 requires-python = ">=3.8"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+    "pdf2image>=1.17.0",
+    "pillow>=10.0",
+    "pypdf>=4.0",
+    "pytesseract>=0.3.10",
+    "requests>=2.31.0",
+    "selectolax>=0.4.9",
+]
 
 [tool.setuptools.packages.find]
 include = ["polizia_locale*"]

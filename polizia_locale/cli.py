@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 from pathlib import Path
 
 from tqdm import tqdm
@@ -23,6 +24,10 @@ from .indicepa import (
 from .normalization import canonical_email_key, canonical_commune_name, canonical_site_root
 from .regions import list_regions, resolve_region
 from .scraper import scrape_polizia_locale
+try:
+    from .scraper.async_scraper import async_scrape_polizia_locale
+except Exception:
+    async_scrape_polizia_locale = None
 from .unioni import (
     fetch_member_comuni,
     find_unioni_with_polizia_locale,
@@ -363,15 +368,37 @@ def _run(region_code: str, region_name: str, args) -> int:
 
         results: list = []
         if args.workers > 1:
-            with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                futures = [pool.submit(_scrape_one, c) for c in to_scrape]
-                for fut in tqdm(
-                    as_completed(futures),
-                    total=len(futures),
-                    desc="Scraping",
-                    unit="comune",
-                ):
-                    results.append(fut.result())
+            if async_scrape_polizia_locale:
+                async def _run_all_async():
+                    sem = asyncio.Semaphore(args.workers)
+
+                    async def _bounded(c):
+                        async with sem:
+                            return await async_scrape_polizia_locale(
+                                c.nome,
+                                c.provincia,
+                                c.codice_istat,
+                                site_hint=site_by_istat.get(c.codice_istat, ""),
+                                timeout=args.timeout,
+                                strict_pl_local=args.strict,
+                                pdf_extract=args.pdf_extract,
+                            )
+
+                    tasks = [asyncio.create_task(_bounded(c)) for c in to_scrape]
+                    for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Scraping", unit="comune"):
+                        results.append(await fut)
+
+                asyncio.run(_run_all_async())
+            else:
+                with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                    futures = [pool.submit(_scrape_one, c) for c in to_scrape]
+                    for fut in tqdm(
+                        as_completed(futures),
+                        total=len(futures),
+                        desc="Scraping",
+                        unit="comune",
+                    ):
+                        results.append(fut.result())
         else:
             for c in to_scrape:
                 results.append(_scrape_one(c))

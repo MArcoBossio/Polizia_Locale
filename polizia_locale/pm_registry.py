@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .indicepa import is_pl_specific_email
+from .html_tools import html_text
 from .normalization import canonical_commune_name, is_close_match
 from .scraper import EMAIL_RE, _is_pec
 from .utils import is_likely_personal_email
@@ -122,7 +123,7 @@ class PoliziaMunicipaleFinder:
         mail: set[str] = set()
 
         # estrazione da testo pagina e mailto
-        text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+        text = html_text(html)
         haystack = "\n".join([html, text])
         UNWANTED = (
             "anagrafe",

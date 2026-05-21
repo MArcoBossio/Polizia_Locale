@@ -13,6 +13,7 @@ import requests
 
 from pypdf import PdfReader
 
+from .html_tools import iter_anchors
 from .scraper import EMAIL_RE
 
 
@@ -83,13 +84,10 @@ def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:
     che hanno nel nome o nel testo del link parole chiave PL.
     """
     from urllib.parse import urljoin
-    from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, "html.parser")
     scored: list[tuple[str, int]] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = (a.get_text() or "").lower()
+    for href, text in iter_anchors(html):
+        text = text.lower()
         if not href.lower().endswith(".pdf") and ".pdf" not in href.lower():
             continue
         absu = urljoin(base, href)
@@ -122,13 +120,10 @@ def find_pdf_links(html: str, base: str, limit: int = 5) -> list[str]:
 def find_pdf_links_broad(html: str, base: str, limit: int = 10) -> list[str]:
     """Estrae un set più ampio di PDF, utile sulle pagine PL o sui nodi già sospetti."""
     from urllib.parse import urljoin
-    from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, "html.parser")
     scored: list[tuple[str, int]] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = (a.get_text() or "").lower()
+    for href, text in iter_anchors(html):
+        text = text.lower()
         if not href.lower().endswith(".pdf") and ".pdf" not in href.lower():
             continue
         absu = urljoin(base, href)
