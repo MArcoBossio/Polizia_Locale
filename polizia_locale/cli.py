@@ -655,6 +655,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "email": " | ".join(sorted(mail_set)),
                         "sito": site_by_istat.get(c.codice_istat, ""),
                         "fonte": "WebScraping+Verifica",
+                        "source_url": pm_links.get(c.codice_istat, ""),
                     }
                     rows.append(d)
                     continue
@@ -668,6 +669,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "regione": c.regione,
                     }
                 )
+                d["source_url"] = pm_links.get(c.codice_istat, "")
                 rows.append(d)
                 continue
             # Step 5b: usa risultato web search se disponibile
@@ -687,6 +689,7 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "email": " | ".join(sorted(mail_set)),
                         "sito": site_by_istat.get(c.codice_istat, ""),
                         "fonte": "WebSearch",
+                        "source_url": pm_links.get(c.codice_istat, ""),
                     }
                 )
                 continue
@@ -709,7 +712,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "indirizzo": info.get("indirizzo", ""),
                         "cap": info.get("cap", ""),
                         "sito": info.get("sito", ""),
-                        "fonte": "IndicePA-Comune (fallback auto post-scraping)",
+                            "fonte": "IndicePA-Comune (fallback auto post-scraping)",
+                            "source_url": pm_links.get(c.codice_istat, ""),
                     }
                 )
             else:
@@ -723,7 +727,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "denominazione_ente": f"Comune di {c.nome}",
                         "pec": "",
                         "email": "",
-                        "fonte": "NON TROVATO",
+                            "fonte": "NON TROVATO",
+                            "source_url": pm_links.get(c.codice_istat, ""),
                     }
                 )
         for c in skipped:
@@ -743,7 +748,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "indirizzo": info.get("indirizzo", ""),
                         "cap": info.get("cap", ""),
                         "sito": info.get("sito", ""),
-                        "fonte": "IndicePA-Comune (fallback)",
+                            "fonte": "IndicePA-Comune (fallback)",
+                            "source_url": pm_links.get(c.codice_istat, ""),
                     }
                 )
             else:
@@ -757,7 +763,8 @@ def _run(region_code: str, region_name: str, args) -> int:
                         "denominazione_ente": f"Comune di {c.nome}",
                         "pec": "",
                         "email": "",
-                        "fonte": "NON TROVATO (scrape-limit)",
+                            "fonte": "NON TROVATO (scrape-limit)",
+                            "source_url": pm_links.get(c.codice_istat, ""),
                     }
                 )
     else:
