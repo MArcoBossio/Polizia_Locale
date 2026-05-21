@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 FIELDS = [
+    "codice_istat",
     "comune",
     "unione",
     "comuni_associati",
@@ -26,6 +27,7 @@ def _normalize_rows(rows: list[dict]) -> list[dict]:
     for r in rows:
         out.append(
             {
+                "codice_istat": r.get("codice_istat", ""),
                 "comune": r.get("comune", ""),
                 "unione": r.get("unione", ""),
                 "comuni_associati": r.get("comuni_associati", ""),

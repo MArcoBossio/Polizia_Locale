@@ -328,6 +328,42 @@ def _run(region_code: str, region_name: str, args) -> int:
         # eventuale limite di scraping/fallback costosi (utile su regioni grandi)
         effective_limit = _effective_expensive_limit(len(comuni), args.scrape_limit)
         to_scrape = missing
+        # resume: se richiesto, leggi l'output JSON esistente e salta i comuni già processati
+        prev_rows: list[dict] = []
+        if getattr(args, "resume", False):
+            region_slug = (
+                region_name.lower()
+                .replace("'", "")
+                .replace("/", "-")
+                .replace(" ", "-")
+                .replace("ü", "u")
+                .replace("é", "e")
+            )
+            basename = f"polizia_locale_{region_slug}"
+            json_path = Path(args.output) / f"{basename}.json"
+            processed_istat: set[str] = set()
+            if json_path.exists():
+                try:
+                    import json as _json
+
+                    prev = _json.load(open(json_path, encoding="utf-8"))
+                    prev_rows = prev
+                    # mappa nomi comuni -> istat
+                    name_to_istat = {c.nome.strip().lower(): c.codice_istat for c in comuni}
+                    for r in prev:
+                        nome = (r.get("comune") or "").strip().lower()
+                        if not nome:
+                            continue
+                        ist = name_to_istat.get(nome)
+                        if ist:
+                            processed_istat.add(ist)
+                except Exception:
+                    print("      Avviso: impossibile leggere l'output esistente per resume; continuerò senza skip.")
+            if processed_istat:
+                before = len(to_scrape)
+                to_scrape = [c for c in to_scrape if c.codice_istat not in processed_istat]
+                skipped_by_resume = before - len(to_scrape)
+                print(f"[4/4] Resume attivo: salto {skipped_by_resume} comuni già presenti nell'output.")
         skipped: list = []
         if effective_limit and len(missing) > effective_limit:
             to_scrape = missing[:effective_limit]
@@ -964,6 +1000,38 @@ def _run(region_code: str, region_name: str, args) -> int:
     rows = _cluster_related_contacts(rows)
     rows = apply_confidence(rows)
 
+    # se resume: unisci i record esistenti nell'output JSON con i nuovi risultati
+    if getattr(args, "resume", False) and prev_rows:
+        name_to_istat = {c.nome.strip().lower(): c.codice_istat for c in comuni}
+        prev_map: dict[str, dict] = {}
+        for p in prev_rows:
+            ist = (p.get("codice_istat") or "") or name_to_istat.get(((p.get("comune") or "").strip().lower()))
+            if not ist:
+                continue
+            prev_map[ist] = p
+
+        new_map: dict[str, dict] = {}
+        orphan_new: list[dict] = []
+        for r in rows:
+            ist = (r.get("codice_istat") or "") or name_to_istat.get(((r.get("comune") or "").strip().lower()))
+            if ist:
+                if ist in prev_map:
+                    merged = dict(prev_map[ist])
+                    merged.update(r)
+                    new_map[ist] = merged
+                else:
+                    new_map[ist] = r
+            else:
+                orphan_new.append(r)
+
+        # aggiungi i precedenti non coperti dalle nuove righe
+        for ist, p in prev_map.items():
+            if ist not in new_map:
+                new_map[ist] = p
+
+        rows = list(new_map.values()) + orphan_new
+        print(f"[EXPORT] Resume: uniti {len(prev_map)} record esistenti; export finale {len(rows)} record.")
+
     # esportazione
     region_slug = (
         region_name.lower()
@@ -1181,6 +1249,13 @@ def build_parser() -> argparse.ArgumentParser:
         "anche le PEC generiche del Comune.",
     )
     p.set_defaults(strict=True)
+    p.add_argument(
+        "--resume",
+        dest="resume",
+        action="store_true",
+        help="Salta i comuni già presenti nell'output JSON esistente (resume).",
+    )
+    p.set_defaults(resume=False)
     return p
 
 
